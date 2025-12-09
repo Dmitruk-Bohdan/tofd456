@@ -49,16 +49,13 @@ async function main() {
   const stakeLamports = new anchor.BN(stakeLamportsNumber);
   const moveFeeLamports = new anchor.BN(moveFeeLamportsNumber);
 
-  const initialBoardState = new Array<number>(64).fill(0);
-
   // init_game
   await program.methods
     .initGame(
       gameId,
       stakeLamports,
       moveFeeLamports,
-      player2.publicKey,
-      initialBoardState
+      player2.publicKey
     )
     .accounts({
       game: game.publicKey,

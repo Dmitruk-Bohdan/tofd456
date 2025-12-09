@@ -19,7 +19,6 @@ pub mod backgammon {
         stake_lamports: u64,
         move_fee_lamports: u64,
         player2_pubkey: Pubkey,
-        initial_board_state: [u8; 64],
     ) -> Result<()> {
         msg!(
             "init_game: game_id={}, stake_lamports={}, move_fee_lamports={}, player1={}, player2={}",
@@ -44,7 +43,8 @@ pub mod backgammon {
         game.player2_deposit = 0;
         game.player1_fees_paid = 0;
         game.player2_fees_paid = 0;
-        game.board_state = initial_board_state;
+        game.board_points = [0; 24];
+        game.dice = [0; 2];
         game.current_turn = 1;
         game.status = GameStatus::WaitingForPlayer2;
         game.winner = Pubkey::default();
@@ -160,7 +160,8 @@ pub mod backgammon {
     /// - переключаем очередь хода.
     pub fn make_move(
         ctx: Context<MakeMove>,
-        new_board_state: [u8; 64],
+        new_board_points: [i8; 24],
+        new_dice: [u8; 2],
     ) -> Result<()> {
         let game = &mut ctx.accounts.game;
 
@@ -236,8 +237,9 @@ pub mod backgammon {
             _ => {}
         }
 
-        // Обновляем состояние доски (валидация оффчейн)
-        game.board_state = new_board_state;
+        // Обновляем состояние доски и кубиков (валидация оффчейн)
+        game.board_points = new_board_points;
+        game.dice = new_dice;
 
         // Увеличиваем счётчик ходов
         game.move_index = game
@@ -526,7 +528,8 @@ pub struct GameState {
     pub player2_fees_paid: u64,   // 8
     pub last_activity_slot: u64,  // 8
     pub move_index: u64,          // 8
-    pub board_state: [u8; 64],    // 64
+    pub board_points: [i8; 24],   // 24 пунктов доски, знак = владелец
+    pub dice: [u8; 2],            // последние выпавшие кубики
     pub current_turn: u8,         // 1
     pub status: GameStatus,       // ~1
     pub winner: Pubkey,           // 32
@@ -541,7 +544,7 @@ impl GameState {
 
 /// Тайм-аут в слотах для аварийного возврата средств.
 /// Для демо на localnet держим маленьким (например, 5 слотов).
-pub const FORCE_REFUND_TIMEOUT_SLOTS: u64 = 5;
+pub const FORCE_REFUND_TIMEOUT_SLOTS: u64 = 600;
 
 /// Enum тоже хранится on-chain, поэтому нужен Serialize/Deserialize.
 /// Для логирования через `{:?}` добавляем также Debug.

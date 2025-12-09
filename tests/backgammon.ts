@@ -15,7 +15,7 @@ describe("backgammon program basic flow", () => {
   const provider = anchor.AnchorProvider.env();
   anchor.setProvider(provider);
 
-  const program = anchor.workspace.Backgammon as Program<Backgammon>;
+  const program: any = anchor.workspace.Backgammon as Program<Backgammon>;
 
   // Игроки – читаем заранее созданные ключи
   const player1 = loadKeypair("keys/player1/player1.json");
@@ -49,7 +49,8 @@ describe("backgammon program basic flow", () => {
     const moveFeeLamports = new anchor.BN(moveFeeLamportsNumber);
 
     // Начальное состояние доски – просто заглушка из нулей длиной 64
-    const initialBoardState = new Array<number>(64).fill(0);
+    const initialBoardPoints = new Array<number>(24).fill(0);
+    const initialDice = [0, 0];
 
     // PDA аккаунта игры: seeds = ["game", player1, player2, game_id_le_bytes]
     const [gamePda] = PublicKey.findProgramAddressSync(
@@ -68,8 +69,7 @@ describe("backgammon program basic flow", () => {
         gameId,
         stakeLamports,
         moveFeeLamports,
-        player2.publicKey,
-        initialBoardState
+        player2.publicKey
       )
       .accounts({
         game: gamePda,
@@ -105,11 +105,12 @@ describe("backgammon program basic flow", () => {
     });
 
     // ---------------- make_move #1 (ходит player1) ----------------
-    const boardAfterMove1 = [...initialBoardState];
+    const boardAfterMove1 = [...initialBoardPoints];
     boardAfterMove1[0] = 1; // условный ход
+    const diceAfterMove1 = [3, 5];
 
     await program.methods
-      .makeMove(boardAfterMove1)
+      .makeMove(boardAfterMove1, diceAfterMove1)
       .accounts({
         game: gamePda,
         player1: player1.publicKey,
@@ -129,9 +130,10 @@ describe("backgammon program basic flow", () => {
     // ---------------- make_move #2 (ходит player2) ----------------
     const boardAfterMove2 = [...boardAfterMove1];
     boardAfterMove2[1] = 2; // условный ход
+    const diceAfterMove2 = [2, 6];
 
     await program.methods
-      .makeMove(boardAfterMove2)
+      .makeMove(boardAfterMove2, diceAfterMove2)
       .accounts({
         game: gamePda,
         player1: player1.publicKey,

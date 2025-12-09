@@ -22,7 +22,7 @@ async function main() {
   });
   anchor.setProvider(provider);
 
-  const program = anchor.workspace.Backgammon as Program<Backgammon>;
+  const program: any = anchor.workspace.Backgammon as Program<Backgammon>;
 
   // Игроки – заранее созданные ключи
   const player1 = loadKeypair("keys/player1/player1.json");
@@ -55,18 +55,12 @@ async function main() {
   const stakeLamports = new anchor.BN(stakeLamportsNumber);
   const moveFeeLamports = new anchor.BN(moveFeeLamportsNumber);
 
-  // Начальное состояние доски – просто заглушка из нулей длиной 64
-  const initialBoardState = new Array<number>(64).fill(0);
+  // Начальное состояние доски – просто заглушка из нулей длиной 24
+  const initialBoardPoints = new Array<number>(24).fill(0);
 
   // ---------------- init_game ----------------
   await program.methods
-    .initGame(
-      gameId,
-      stakeLamports,
-      moveFeeLamports,
-      player2.publicKey,
-      initialBoardState
-    )
+    .initGame(gameId, stakeLamports, moveFeeLamports, player2.publicKey)
     .accounts({
       game: game.publicKey,
       player1: player1.publicKey,
@@ -115,11 +109,12 @@ async function main() {
   });
 
   // ---------------- make_move #1 (ходит player1) ----------------
-  const boardAfterMove1 = [...initialBoardState];
+  const boardAfterMove1 = [...initialBoardPoints];
   boardAfterMove1[0] = 1; // условный ход
+  const diceAfterMove1 = [3, 5];
 
   await program.methods
-    .makeMove(boardAfterMove1)
+    .makeMove(boardAfterMove1, diceAfterMove1)
     .accounts({
       game: game.publicKey,
       player1: player1.publicKey,
@@ -146,9 +141,10 @@ async function main() {
   // ---------------- make_move #2 (ходит player2) ----------------
   const boardAfterMove2 = [...boardAfterMove1];
   boardAfterMove2[1] = 2; // условный ход
+  const diceAfterMove2 = [2, 6];
 
   await program.methods
-    .makeMove(boardAfterMove2)
+    .makeMove(boardAfterMove2, diceAfterMove2)
     .accounts({
       game: game.publicKey,
       player1: player1.publicKey,
