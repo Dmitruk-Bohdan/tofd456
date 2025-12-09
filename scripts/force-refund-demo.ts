@@ -1,6 +1,6 @@
 import * as anchor from "@coral-xyz/anchor";
 import { Program, Wallet } from "@coral-xyz/anchor";
-import { Keypair, PublicKey, SystemProgram } from "@solana/web3.js";
+import { Keypair, SystemProgram } from "@solana/web3.js";
 import * as fs from "fs";
 import { Backgammon } from "../target/types/backgammon";
 
@@ -10,9 +10,11 @@ function loadKeypair(path: string): Keypair {
   return Keypair.fromSecretKey(secretKey);
 }
 
+function sleep(ms: number) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 async function main() {
-  // Настраиваем подключение и провайдера явно, без ANCHOR_PROVIDER_URL.
-  // Используем локальный валидатор и main-authority как провайдера (payer).
   const connection = new anchor.web3.Connection("http://127.0.0.1:8899", "confirmed");
 
   const mainAuthority = loadKeypair("keys/main-authority/main-authority.json");
@@ -24,19 +26,15 @@ async function main() {
 
   const program = anchor.workspace.Backgammon as Program<Backgammon>;
 
-  // Игроки – заранее созданные ключи
   const player1 = loadKeypair("keys/player1/player1.json");
   const player2 = loadKeypair("keys/player2/player2.json");
-  // Аккаунт игры (обычный Keypair, без PDA/seeds для упрощения)
   const game = Keypair.generate();
 
-  // Параметры игры (в лампортах)
   const stakeLamportsNumber = 0.5 * anchor.web3.LAMPORTS_PER_SOL;
   const moveFeeLamportsNumber = 0.01 * anchor.web3.LAMPORTS_PER_SOL;
 
-  // Минимальный баланс: ставка + 2 хода * комиссия + небольшой запас
   const minRequiredLamportsPerPlayer =
-    stakeLamportsNumber + 2 * moveFeeLamportsNumber + 0.1 * anchor.web3.LAMPORTS_PER_SOL;
+    stakeLamportsNumber + 3 * moveFeeLamportsNumber + 0.1 * anchor.web3.LAMPORTS_PER_SOL;
 
   for (const kp of [player1, player2]) {
     const balance = await connection.getBalance(kp.publicKey);
@@ -46,7 +44,6 @@ async function main() {
         `Airdropping ${toAirdrop} lamports to ${kp.publicKey.toBase58()} (old balance=${balance})`
       );
       const sig = await connection.requestAirdrop(kp.publicKey, toAirdrop);
-      // Для совместимости с текущей версией web3.js используем строковый overload
       await connection.confirmTransaction(sig, "confirmed");
     }
   }
@@ -55,7 +52,6 @@ async function main() {
   const stakeLamports = new anchor.BN(stakeLamportsNumber);
   const moveFeeLamports = new anchor.BN(moveFeeLamportsNumber);
 
-  // Начальное состояние доски – просто заглушка из нулей длиной 64
   const initialBoardState = new Array<number>(64).fill(0);
 
   // ---------------- init_game ----------------
@@ -79,44 +75,44 @@ async function main() {
 
   let gameAccount = await program.account.gameState.fetch(game.publicKey);
   console.log("After init_game:", {
-    pot_lamports: gameAccount.potLamports.toString(),
+    pot_sol: Number(gameAccount.potLamports) / anchor.web3.LAMPORTS_PER_SOL,
     status: gameAccount.status,
     current_turn: gameAccount.currentTurn,
   });
-  const balance1_after_init = await connection.getBalance(player1.publicKey);
-  const balance2_after_init = await connection.getBalance(player2.publicKey);
+  let p1_balance = await connection.getBalance(player1.publicKey);
+  let p2_balance = await connection.getBalance(player2.publicKey);
   console.log("Player balances after init_game:", {
-    player1: `${balance1_after_init / anchor.web3.LAMPORTS_PER_SOL} SOL`,
-    player2: `${balance2_after_init / anchor.web3.LAMPORTS_PER_SOL} SOL`,
+    player1: p1_balance / anchor.web3.LAMPORTS_PER_SOL,
+    player2: p2_balance / anchor.web3.LAMPORTS_PER_SOL,
   });
 
   // ---------------- join_game ----------------
   await program.methods
-      .joinGame()
-      .accounts({
-        game: game.publicKey,
-        player2: player2.publicKey,
-        systemProgram: SystemProgram.programId,
-      } as any)
-      .signers([player2])
-      .rpc();
+    .joinGame()
+    .accounts({
+      game: game.publicKey,
+      player2: player2.publicKey,
+      systemProgram: SystemProgram.programId,
+    } as any)
+    .signers([player2])
+    .rpc();
 
   gameAccount = await program.account.gameState.fetch(game.publicKey);
   console.log("After join_game:", {
-    pot_lamports: gameAccount.potLamports.toString(),
+    pot_sol: Number(gameAccount.potLamports) / anchor.web3.LAMPORTS_PER_SOL,
     status: gameAccount.status,
     current_turn: gameAccount.currentTurn,
   });
-  const balance1_after_join = await connection.getBalance(player1.publicKey);
-  const balance2_after_join = await connection.getBalance(player2.publicKey);
+  p1_balance = await connection.getBalance(player1.publicKey);
+  p2_balance = await connection.getBalance(player2.publicKey);
   console.log("Player balances after join_game:", {
-    player1: `${balance1_after_join / anchor.web3.LAMPORTS_PER_SOL} SOL`,
-    player2: `${balance2_after_join / anchor.web3.LAMPORTS_PER_SOL} SOL`,
+    player1: p1_balance / anchor.web3.LAMPORTS_PER_SOL,
+    player2: p2_balance / anchor.web3.LAMPORTS_PER_SOL,
   });
 
   // ---------------- make_move #1 (ходит player1) ----------------
   const boardAfterMove1 = [...initialBoardState];
-  boardAfterMove1[0] = 1; // условный ход
+  boardAfterMove1[0] = 1;
 
   await program.methods
     .makeMove(boardAfterMove1)
@@ -131,21 +127,21 @@ async function main() {
 
   gameAccount = await program.account.gameState.fetch(game.publicKey);
   console.log("After make_move #1:", {
-    pot_lamports: gameAccount.potLamports.toString(),
+    pot_sol: Number(gameAccount.potLamports) / anchor.web3.LAMPORTS_PER_SOL,
     status: gameAccount.status,
     current_turn: gameAccount.currentTurn,
     move_index: gameAccount.moveIndex.toString(),
   });
-  const balance1_after_move1 = await connection.getBalance(player1.publicKey);
-  const balance2_after_move1 = await connection.getBalance(player2.publicKey);
+  p1_balance = await connection.getBalance(player1.publicKey);
+  p2_balance = await connection.getBalance(player2.publicKey);
   console.log("Player balances after make_move #1:", {
-    player1: `${balance1_after_move1 / anchor.web3.LAMPORTS_PER_SOL} SOL`,
-    player2: `${balance2_after_move1 / anchor.web3.LAMPORTS_PER_SOL} SOL`,
+    player1: p1_balance / anchor.web3.LAMPORTS_PER_SOL,
+    player2: p2_balance / anchor.web3.LAMPORTS_PER_SOL,
   });
 
   // ---------------- make_move #2 (ходит player2) ----------------
   const boardAfterMove2 = [...boardAfterMove1];
-  boardAfterMove2[1] = 2; // условный ход
+  boardAfterMove2[1] = 2;
 
   await program.methods
     .makeMove(boardAfterMove2)
@@ -160,40 +156,85 @@ async function main() {
 
   gameAccount = await program.account.gameState.fetch(game.publicKey);
   console.log("After make_move #2:", {
-    pot_lamports: gameAccount.potLamports.toString(),
+    pot_sol: Number(gameAccount.potLamports) / anchor.web3.LAMPORTS_PER_SOL,
     status: gameAccount.status,
     current_turn: gameAccount.currentTurn,
     move_index: gameAccount.moveIndex.toString(),
   });
-  const balance1_after_move2 = await connection.getBalance(player1.publicKey);
-  const balance2_after_move2 = await connection.getBalance(player2.publicKey);
+  p1_balance = await connection.getBalance(player1.publicKey);
+  p2_balance = await connection.getBalance(player2.publicKey);
   console.log("Player balances after make_move #2:", {
-    player1: `${balance1_after_move2 / anchor.web3.LAMPORTS_PER_SOL} SOL`,
-    player2: `${balance2_after_move2 / anchor.web3.LAMPORTS_PER_SOL} SOL`,
+    player1: p1_balance / anchor.web3.LAMPORTS_PER_SOL,
+    player2: p2_balance / anchor.web3.LAMPORTS_PER_SOL,
   });
 
-  // ---------------- finish_game (выиграл player1) ----------------
+  // ---------------- make_move #3 (снова player1) ----------------
+  const boardAfterMove3 = [...boardAfterMove2];
+  boardAfterMove3[2] = 3;
+
   await program.methods
-    .finishGame(player1.publicKey)
+    .makeMove(boardAfterMove3)
     .accounts({
       game: game.publicKey,
       player1: player1.publicKey,
       player2: player2.publicKey,
-    })
+      systemProgram: SystemProgram.programId,
+    } as any)
     .signers([player1, player2])
     .rpc();
 
   gameAccount = await program.account.gameState.fetch(game.publicKey);
-  console.log("After finish_game:", {
-    pot_lamports: gameAccount.potLamports.toString(),
+  console.log("After make_move #3:", {
+    pot_sol: Number(gameAccount.potLamports) / anchor.web3.LAMPORTS_PER_SOL,
     status: gameAccount.status,
-    winner: gameAccount.winner.toBase58(),
+    current_turn: gameAccount.currentTurn,
+    move_index: gameAccount.moveIndex.toString(),
   });
-  const balance1_after_finish = await connection.getBalance(player1.publicKey);
-  const balance2_after_finish = await connection.getBalance(player2.publicKey);
-  console.log("Player balances after finish_game:", {
-    player1: `${balance1_after_finish / anchor.web3.LAMPORTS_PER_SOL} SOL`,
-    player2: `${balance2_after_finish / anchor.web3.LAMPORTS_PER_SOL} SOL`,
+  p1_balance = await connection.getBalance(player1.publicKey);
+  p2_balance = await connection.getBalance(player2.publicKey);
+  console.log("Player balances after make_move #3:", {
+    player1: p1_balance / anchor.web3.LAMPORTS_PER_SOL,
+    player2: p2_balance / anchor.web3.LAMPORTS_PER_SOL,
+  });
+
+  // ---------------- force_refund (отмена игры вторым игроком по тайм-ауту) ----------------
+  console.log("Waiting for timeout slots before force_refund...");
+  let currentSlot = await connection.getSlot("confirmed");
+  while (
+    currentSlot - gameAccount.lastActivitySlot.toNumber() <
+    5 // должно совпадать с FORCE_REFUND_TIMEOUT_SLOTS
+  ) {
+    await sleep(500);
+    currentSlot = await connection.getSlot("confirmed");
+  }
+
+  console.log(
+    "Slots passed:",
+    currentSlot - gameAccount.lastActivitySlot.toNumber()
+  );
+
+  await program.methods
+    .forceRefund()
+    .accounts({
+      game: game.publicKey,
+      player1: player1.publicKey,
+      player2: player2.publicKey,
+      systemProgram: SystemProgram.programId,
+    } as any)
+    .signers([player1, player2]) // инициировать может второй, но оба подписывают
+    .rpc();
+
+  gameAccount = await program.account.gameState.fetch(game.publicKey);
+  console.log("After force_refund:", {
+    pot_sol: Number(gameAccount.potLamports) / anchor.web3.LAMPORTS_PER_SOL,
+    status: gameAccount.status,
+  });
+
+  const balance1_final = await connection.getBalance(player1.publicKey);
+  const balance2_final = await connection.getBalance(player2.publicKey);
+  console.log("Final player balances after force_refund:", {
+    player1: balance1_final / anchor.web3.LAMPORTS_PER_SOL,
+    player2: balance2_final / anchor.web3.LAMPORTS_PER_SOL,
   });
 }
 

@@ -40,6 +40,10 @@ pub mod backgammon {
         game.stake_lamports = stake_lamports;
         game.move_fee_lamports = move_fee_lamports;
         game.pot_lamports = 0;
+        game.player1_deposit = 0;
+        game.player2_deposit = 0;
+        game.player1_fees_paid = 0;
+        game.player2_fees_paid = 0;
         game.board_state = initial_board_state;
         game.current_turn = 1;
         game.status = GameStatus::WaitingForPlayer2;
@@ -48,6 +52,7 @@ pub mod backgammon {
         // поэтому bump просто ставим в 0.
         game.bump = 0;
         game.move_index = 0;
+        game.last_activity_slot = Clock::get()?.slot;
 
         msg!(
             "init_game: GameState initialized: status={:?}, current_turn={}, pot_lamports={}, bump={}",
@@ -67,6 +72,10 @@ pub mod backgammon {
 
         game.pot_lamports = game
             .pot_lamports
+            .checked_add(stake_lamports)
+            .ok_or(ErrorCode::MathOverflow)?;
+        game.player1_deposit = game
+            .player1_deposit
             .checked_add(stake_lamports)
             .ok_or(ErrorCode::MathOverflow)?;
 
@@ -125,6 +134,12 @@ pub mod backgammon {
             .pot_lamports
             .checked_add(stake)
             .ok_or(ErrorCode::MathOverflow)?;
+        game.player2_deposit = game
+            .player2_deposit
+            .checked_add(stake)
+            .ok_or(ErrorCode::MathOverflow)?;
+
+        game.last_activity_slot = Clock::get()?.slot;
         game.status = GameStatus::Active;
 
         msg!(
@@ -186,6 +201,13 @@ pub mod backgammon {
             current_player_signer.key()
         );
 
+        // Проверяем, что у игрока достаточно средств для оплаты хода.
+        let from_lamports = **current_player_signer.to_account_info().lamports.borrow();
+        require!(
+            from_lamports >= move_fee,
+            ErrorCode::NotEnoughBalanceForMove
+        );
+
         let cpi_accounts = system_program::Transfer {
             from: current_player_signer.to_account_info(),
             to: game.to_account_info(),
@@ -196,6 +218,23 @@ pub mod backgammon {
             .pot_lamports
             .checked_add(move_fee)
             .ok_or(ErrorCode::MathOverflow)?;
+
+        // Обновляем, кто сколько заплатил комиссий за ходы.
+        match game.current_turn {
+            1 => {
+                game.player1_fees_paid = game
+                    .player1_fees_paid
+                    .checked_add(move_fee)
+                    .ok_or(ErrorCode::MathOverflow)?;
+            }
+            2 => {
+                game.player2_fees_paid = game
+                    .player2_fees_paid
+                    .checked_add(move_fee)
+                    .ok_or(ErrorCode::MathOverflow)?;
+            }
+            _ => {}
+        }
 
         // Обновляем состояние доски (валидация оффчейн)
         game.board_state = new_board_state;
@@ -208,6 +247,9 @@ pub mod backgammon {
 
         // Переключаем очередь хода
         game.current_turn = if game.current_turn == 1 { 2 } else { 1 };
+
+        // Обновляем время последней активности (используется для force_refund)
+        game.last_activity_slot = Clock::get()?.slot;
 
         msg!(
             "make_move: completed, new_move_index={}, new_current_turn={}, pot_lamports={}",
@@ -258,23 +300,23 @@ pub mod backgammon {
         let pot = game.pot_lamports;
 
         // Определяем, чей аккаунт победителя пополнить
-        let winner_account_info = if winner == game.player1 {
+        let (winner_account_info, winner_label) = if winner == game.player1 {
             msg!(
                 "finish_game: winner is player1={}, pot_lamports={}",
                 game.player1,
                 pot
             );
-            ctx.accounts.player1.to_account_info()
+            (ctx.accounts.player1.to_account_info(), "player1")
         } else {
             msg!(
                 "finish_game: winner is player2={}, pot_lamports={}",
                 game.player2,
                 pot
             );
-            ctx.accounts.player2.to_account_info()
+            (ctx.accounts.player2.to_account_info(), "player2")
         };
 
-        // Переводим весь банк победителю
+        // Переводим весь банк победителю напрямую, т.к. аккаунт игры принадлежит нашей программе.
         **game.to_account_info().try_borrow_mut_lamports()? -= pot;
         **winner_account_info.try_borrow_mut_lamports()? += pot;
 
@@ -283,11 +325,186 @@ pub mod backgammon {
         game.winner = winner;
 
         msg!(
-            "finish_game: completed, game_id={}, final_status={:?}, winner={}",
+            "finish_game: completed, game_id={}, final_status={:?}, winner={} ({})",
             game.game_id,
             game.status,
-            game.winner
+            game.winner,
+            winner_label
         );
+
+        Ok(())
+    }
+
+    /// Отмена игры до присоединения второго игрока.
+    ///
+    /// Используется для случая, когда второй игрок так и не зашёл в игру.
+    /// Возвращает весь банк (ставку) первому игроку.
+    pub fn cancel_before_join(ctx: Context<CancelBeforeJoin>) -> Result<()> {
+        let game = &mut ctx.accounts.game;
+
+        require!(
+            game.status == GameStatus::WaitingForPlayer2,
+            ErrorCode::GameNotWaitingForPlayer2
+        );
+
+        let amount = game.pot_lamports;
+        msg!(
+            "cancel_before_join: refunding {} lamports to player1={}",
+            amount,
+            game.player1
+        );
+
+        // Переводим банк обратно игроку напрямую (аккаунт игры принадлежит нашей программе).
+        **game.to_account_info().try_borrow_mut_lamports()? -= amount;
+        **ctx
+            .accounts
+            .player1
+            .to_account_info()
+            .try_borrow_mut_lamports()? += amount;
+
+        game.pot_lamports = 0;
+        game.player1_deposit = 0;
+        game.status = GameStatus::Finished;
+
+        Ok(())
+    }
+
+    /// Аварийный возврат средств обоим игрокам по тайм-ауту.
+    ///
+    /// Если игра зависла в Active (кто-то не ходит / не подписывает),
+    /// и с момента последнего действия прошло достаточно слотов, то
+    /// банк делится между игроками пропорционально их вкладам.
+    pub fn force_refund(ctx: Context<ForceRefund>) -> Result<()> {
+        let game = &mut ctx.accounts.game;
+
+        require!(game.status == GameStatus::Active, ErrorCode::GameNotActive);
+
+        let current_slot = Clock::get()?.slot;
+        let last = game.last_activity_slot;
+
+        msg!(
+            "force_refund: current_slot={}, last_activity_slot={}",
+            current_slot,
+            last
+        );
+
+        require!(
+            current_slot
+                .checked_sub(last)
+                .ok_or(ErrorCode::MathOverflow)?
+                >= FORCE_REFUND_TIMEOUT_SLOTS,
+            ErrorCode::TimeoutNotReached
+        );
+
+        let total_p1 = game
+            .player1_deposit
+            .checked_add(game.player1_fees_paid)
+            .ok_or(ErrorCode::MathOverflow)?;
+        let total_p2 = game
+            .player2_deposit
+            .checked_add(game.player2_fees_paid)
+            .ok_or(ErrorCode::MathOverflow)?;
+
+        let pot = game.pot_lamports;
+        msg!(
+            "force_refund: pot={}, total_p1={}, total_p2={}",
+            pot,
+            total_p1,
+            total_p2
+        );
+
+        let total = total_p1
+            .checked_add(total_p2)
+            .ok_or(ErrorCode::MathOverflow)?;
+        require!(total == pot, ErrorCode::InconsistentPot);
+
+        // Возвращаем каждому ровно его вклад. Аккаунт игры принадлежит нашей программе,
+        // поэтому можем напрямую изменять его баланс.
+        if total_p1 > 0 {
+            **game.to_account_info().try_borrow_mut_lamports()? -= total_p1;
+            **ctx
+                .accounts
+                .player1
+                .to_account_info()
+                .try_borrow_mut_lamports()? += total_p1;
+        }
+
+        if total_p2 > 0 {
+            **game.to_account_info().try_borrow_mut_lamports()? -= total_p2;
+            **ctx
+                .accounts
+                .player2
+                .to_account_info()
+                .try_borrow_mut_lamports()? += total_p2;
+        }
+
+        game.pot_lamports = 0;
+        game.player1_deposit = 0;
+        game.player2_deposit = 0;
+        game.player1_fees_paid = 0;
+        game.player2_fees_paid = 0;
+        game.status = GameStatus::Finished;
+
+        Ok(())
+    }
+
+    /// Ручной (взаимный) возврат средств обоим игрокам без тайм-аута.
+    ///
+    /// Требует подписи ОБОИХ игроков. Логика распределения средств
+    /// такая же, как в force_refund: каждый получает свой депозит +
+    /// все уплаченные им ходы, при этом сумма вкладов должна совпадать с pot_lamports.
+    pub fn manual_refund(ctx: Context<ForceRefund>) -> Result<()> {
+        let game = &mut ctx.accounts.game;
+
+        require!(game.status == GameStatus::Active, ErrorCode::GameNotActive);
+
+        let total_p1 = game
+            .player1_deposit
+            .checked_add(game.player1_fees_paid)
+            .ok_or(ErrorCode::MathOverflow)?;
+        let total_p2 = game
+            .player2_deposit
+            .checked_add(game.player2_fees_paid)
+            .ok_or(ErrorCode::MathOverflow)?;
+
+        let pot = game.pot_lamports;
+        msg!(
+            "manual_refund: pot={}, total_p1={}, total_p2={}",
+            pot,
+            total_p1,
+            total_p2
+        );
+
+        let total = total_p1
+            .checked_add(total_p2)
+            .ok_or(ErrorCode::MathOverflow)?;
+        require!(total == pot, ErrorCode::InconsistentPot);
+
+        // Возвращаем каждому ровно его вклад.
+        if total_p1 > 0 {
+            **game.to_account_info().try_borrow_mut_lamports()? -= total_p1;
+            **ctx
+                .accounts
+                .player1
+                .to_account_info()
+                .try_borrow_mut_lamports()? += total_p1;
+        }
+
+        if total_p2 > 0 {
+            **game.to_account_info().try_borrow_mut_lamports()? -= total_p2;
+            **ctx
+                .accounts
+                .player2
+                .to_account_info()
+                .try_borrow_mut_lamports()? += total_p2;
+        }
+
+        game.pot_lamports = 0;
+        game.player1_deposit = 0;
+        game.player2_deposit = 0;
+        game.player1_fees_paid = 0;
+        game.player2_fees_paid = 0;
+        game.status = GameStatus::Finished;
 
         Ok(())
     }
@@ -303,6 +520,11 @@ pub struct GameState {
     pub stake_lamports: u64,      // 8
     pub move_fee_lamports: u64,   // 8
     pub pot_lamports: u64,        // 8
+    pub player1_deposit: u64,     // 8
+    pub player2_deposit: u64,     // 8
+    pub player1_fees_paid: u64,   // 8
+    pub player2_fees_paid: u64,   // 8
+    pub last_activity_slot: u64,  // 8
     pub move_index: u64,          // 8
     pub board_state: [u8; 64],    // 64
     pub current_turn: u8,         // 1
@@ -316,6 +538,10 @@ pub struct GameState {
 impl GameState {
     pub const MAX_SIZE: usize = 256;
 }
+
+/// Тайм-аут в слотах для аварийного возврата средств.
+/// Для демо на localnet держим маленьким (например, 5 слотов).
+pub const FORCE_REFUND_TIMEOUT_SLOTS: u64 = 5;
 
 /// Enum тоже хранится on-chain, поэтому нужен Serialize/Deserialize.
 /// Для логирования через `{:?}` добавляем также Debug.
@@ -335,6 +561,40 @@ pub struct JoinGame<'info> {
 
     /// Второй игрок, вносит свою стартовую ставку.
     #[account(mut)]
+    pub player2: Signer<'info>,
+
+    /// Системная программа Solana.
+    pub system_program: Program<'info, System>,
+}
+
+/// Отмена игры до присоединения второго игрока.
+#[derive(Accounts)]
+pub struct CancelBeforeJoin<'info> {
+    /// Аккаунт игры.
+    #[account(mut)]
+    pub game: Account<'info, GameState>,
+
+    /// Первый игрок, который создавал игру и может её отменить.
+    #[account(mut, address = game.player1)]
+    pub player1: Signer<'info>,
+
+    /// Системная программа Solana.
+    pub system_program: Program<'info, System>,
+}
+
+/// Аварийный возврат средств обоим игрокам по тайм-ауту.
+#[derive(Accounts)]
+pub struct ForceRefund<'info> {
+    /// Аккаунт игры.
+    #[account(mut)]
+    pub game: Account<'info, GameState>,
+
+    /// Первый игрок.
+    #[account(mut, address = game.player1)]
+    pub player1: Signer<'info>,
+
+    /// Второй игрок.
+    #[account(mut, address = game.player2)]
     pub player2: Signer<'info>,
 
     /// Системная программа Solana.
@@ -374,6 +634,9 @@ pub struct FinishGame<'info> {
     /// Второй игрок, должен совпадать с game.player2.
     #[account(mut, address = game.player2)]
     pub player2: Signer<'info>,
+
+    /// Системная программа Solana, нужна для transfer через CPI.
+    pub system_program: Program<'info, System>,
 }
 
 /// Коды ошибок для удобной диагностики.
@@ -402,6 +665,15 @@ pub enum ErrorCode {
     
     #[msg("Invalid player 1")]
     InvalidPlayer1,
+
+    #[msg("Not enough balance to pay move fee")]
+    NotEnoughBalanceForMove,
+
+    #[msg("Force refund timeout not reached yet")]
+    TimeoutNotReached,
+
+    #[msg("Inconsistent pot and recorded contributions")]
+    InconsistentPot,
 }
 
 /// Контекст для init_game.
