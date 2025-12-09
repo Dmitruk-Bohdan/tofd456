@@ -201,9 +201,10 @@ async function main() {
   // ---------------- force_refund (отмена игры вторым игроком по тайм-ауту) ----------------
   console.log("Waiting for timeout slots before force_refund...");
   let currentSlot = await connection.getSlot("confirmed");
+  const TIMEOUT_SLOTS = 600; // должно совпадать с FORCE_REFUND_TIMEOUT_SLOTS в программе
   while (
     currentSlot - gameAccount.lastActivitySlot.toNumber() <
-    5 // должно совпадать с FORCE_REFUND_TIMEOUT_SLOTS
+    TIMEOUT_SLOTS
   ) {
     await sleep(500);
     currentSlot = await connection.getSlot("confirmed");
