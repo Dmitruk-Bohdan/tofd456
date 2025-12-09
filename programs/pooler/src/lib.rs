@@ -1,4 +1,5 @@
 use anchor_lang::prelude::*;
+use anchor_lang::system_program;
 
 declare_id!("DmEwwQX5n6mt2Hgv923xmVLDQpWWcvYmTcm3yJbZ5xRr");
 
@@ -43,7 +44,9 @@ pub mod backgammon {
         game.current_turn = 1;
         game.status = GameStatus::WaitingForPlayer2;
         game.winner = Pubkey::default();
-        game.bump = ctx.bumps.game;
+        // Для упрощения в учебном примере не используем PDA seeds для аккаунта игры,
+        // поэтому bump просто ставим в 0.
+        game.bump = 0;
         game.move_index = 0;
 
         msg!(
@@ -54,21 +57,18 @@ pub mod backgammon {
             game.bump
         );
 
-        // Забираем ставку у первого игрока в аккаунт игры
-        // player1: берём лампорты напрямую с ctx.accounts.player1
-        **ctx
-            .accounts
-            .player1
-            .to_account_info()
-            .try_borrow_mut_lamports()? -= stake_lamports;
+        // Забираем ставку у первого игрока в аккаунт игры через CPI в системную программу.
+        let cpi_accounts = system_program::Transfer {
+            from: ctx.accounts.player1.to_account_info(),
+            to: game.to_account_info(),
+        };
+        let cpi_ctx = CpiContext::new(ctx.accounts.system_program.to_account_info(), cpi_accounts);
+        system_program::transfer(cpi_ctx, stake_lamports)?;
 
-        // game: берём лампорты через уже взятую &mut ссылку `game`,
-        // а не через ctx.accounts.game
-        **game
-            .to_account_info()
-            .try_borrow_mut_lamports()? += stake_lamports;
-
-        game.pot_lamports += stake_lamports;
+        game.pot_lamports = game
+            .pot_lamports
+            .checked_add(stake_lamports)
+            .ok_or(ErrorCode::MathOverflow)?;
 
         msg!(
             "init_game: stake transferred from player1={}, stake_lamports={}, pot_lamports={}",
@@ -114,16 +114,17 @@ pub mod backgammon {
             stake
         );
 
-        **ctx
-            .accounts
-            .player2
-            .to_account_info()
-            .try_borrow_mut_lamports()? -= stake;
-        **game
-            .to_account_info()
-            .try_borrow_mut_lamports()? += stake;
+        let cpi_accounts = system_program::Transfer {
+            from: ctx.accounts.player2.to_account_info(),
+            to: game.to_account_info(),
+        };
+        let cpi_ctx = CpiContext::new(ctx.accounts.system_program.to_account_info(), cpi_accounts);
+        system_program::transfer(cpi_ctx, stake)?;
 
-        game.pot_lamports += stake;
+        game.pot_lamports = game
+            .pot_lamports
+            .checked_add(stake)
+            .ok_or(ErrorCode::MathOverflow)?;
         game.status = GameStatus::Active;
 
         msg!(
@@ -185,10 +186,12 @@ pub mod backgammon {
             current_player_signer.key()
         );
 
-        **current_player_signer
-            .to_account_info()
-            .try_borrow_mut_lamports()? -= move_fee;
-        **game.to_account_info().try_borrow_mut_lamports()? += move_fee;
+        let cpi_accounts = system_program::Transfer {
+            from: current_player_signer.to_account_info(),
+            to: game.to_account_info(),
+        };
+        let cpi_ctx = CpiContext::new(ctx.accounts.system_program.to_account_info(), cpi_accounts);
+        system_program::transfer(cpi_ctx, move_fee)?;
         game.pot_lamports = game
             .pot_lamports
             .checked_add(move_fee)
@@ -352,6 +355,9 @@ pub struct MakeMove<'info> {
     /// Второй игрок, должен совпадать с game.player2.
     #[account(mut, address = game.player2)]
     pub player2: Signer<'info>,
+
+    /// Системная программа Solana, нужна для transfer через CPI.
+    pub system_program: Program<'info, System>,
 }
 
 /// Контекст для завершения игры и вывода банка победителю.
@@ -410,13 +416,6 @@ pub struct InitGame<'info> {
         init,
         payer = player1,
         space = 8 + GameState::MAX_SIZE,
-        seeds = [
-            b"game",
-            player1.key().as_ref(),
-            player2_pubkey.as_ref(),
-            &game_id.to_le_bytes(),
-        ],
-        bump
     )]
     pub game: Account<'info, GameState>,
 
