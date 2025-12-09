@@ -1,4 +1,4 @@
-## Nardy on Solana – кратко
+## Nardy on Solana
 
 Три слоя:
 
