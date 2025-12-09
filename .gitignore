@@ -7,3 +7,17 @@ test-ledger
 .yarn
 
 /keys/
+
+# Client (React / Vite)
+/client/node_modules
+/client/dist
+/client/dist-ssr
+/client/logs
+/client/*.log
+/client/npm-debug.log*
+/client/yarn-debug.log*
+/client/yarn-error.log*
+/client/pnpm-debug.log*
+/client/lerna-debug.log*
+/client/.vscode/
+/client/.idea
