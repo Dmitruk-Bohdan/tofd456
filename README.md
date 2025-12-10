@@ -1,6 +1,6 @@
-## Nardy on Solana – Overview
+## Nardy on Solana
 
-Проект состоит из трёх слоёв:
+Проект состоит из трех слоев:
 
 - **On-chain**: `programs/pooler` – Anchor-программа `backgammon` (эскроу ставок, банк, финальный расчёт, аварийные сценарии).
 - **Off-chain server**: `server` – Node.js + TypeScript + SQLite (хранение метаданных игр и ходов, WebSocket для оповещения клиентов).
