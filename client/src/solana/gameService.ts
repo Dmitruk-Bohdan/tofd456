@@ -253,6 +253,7 @@ export async function getGameState(gamePubkey: string): Promise<{
   player1: string;
   player2: string;
   potLamports: string;
+  currentTurn: number;
 } | null> {
   logger.info("getGameState called", { gamePubkey });
 
@@ -302,10 +303,14 @@ export async function getGameState(gamePubkey: string): Promise<{
     const potLamports = new BN(potLamportsBytes, "le").toString();
     offset += 8;
     
-    // ... пропускаем остальные поля до status
+    // ... пропускаем остальные поля до current_turn
     // player1_deposit (8) + player2_deposit (8) + player1_fees_paid (8) + player2_fees_paid (8) + 
-    // last_activity_slot (8) + move_index (8) + board_points (24) + dice (2) + current_turn (1) = 75 байт
-    offset += 75;
+    // last_activity_slot (8) + move_index (8) + board_points (24) + dice (2) = 74 байт
+    offset += 74;
+    
+    // current_turn (1 байт) - находится перед status
+    const currentTurn = data[offset];
+    offset += 1;
     
     // status - это enum, первый байт это вариант (0 = WaitingForPlayer2, 1 = Active, 2 = Finished)
     const statusByte = data[offset];
@@ -322,6 +327,7 @@ export async function getGameState(gamePubkey: string): Promise<{
       player1,
       player2,
       potLamports,
+      currentTurn,
     });
 
     return {
@@ -329,6 +335,7 @@ export async function getGameState(gamePubkey: string): Promise<{
       player1,
       player2,
       potLamports,
+      currentTurn,
     };
   } catch (error) {
     logger.error("Error fetching game state", error as Error, { gamePubkey });

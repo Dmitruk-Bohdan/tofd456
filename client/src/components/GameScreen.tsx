@@ -71,18 +71,40 @@ export default function GameScreen({ gamePubkey, onBack }: GameScreenProps) {
           player2: gameData.game.player2,
         });
 
-        // Определяем, чей сейчас ход (по умолчанию player1 начинает)
+        // Получаем реальное состояние из блокчейна для определения текущего хода
+        const gameState = await getGameState(gamePubkey);
         const isPlayer1 = myPubkey === gameData.game.player1;
-        setCurrentTurn(isPlayer1 ? 1 : 2);
-        setIsMyTurn(isPlayer1);
-
-        logger.info("Game info loaded", {
-          gamePubkey,
-          player1: gameData.game.player1,
-          player2: gameData.game.player2,
-          isPlayer1,
-          myPubkey,
-        });
+        
+        if (gameState && gameState.status === "Active") {
+          // Используем реальный currentTurn из блокчейна
+          const realCurrentTurn = gameState.currentTurn || 1; // По умолчанию 1, если не удалось прочитать
+          setCurrentTurn(realCurrentTurn);
+          // Правильно определяем, наш ли это ход
+          setIsMyTurn((realCurrentTurn === 1 && isPlayer1) || (realCurrentTurn === 2 && !isPlayer1));
+          
+          logger.info("Game info loaded with blockchain state", {
+            gamePubkey,
+            player1: gameData.game.player1,
+            player2: gameData.game.player2,
+            isPlayer1,
+            myPubkey,
+            currentTurn: realCurrentTurn,
+            isMyTurn: (realCurrentTurn === 1 && isPlayer1) || (realCurrentTurn === 2 && !isPlayer1),
+          });
+        } else {
+          // Если игра еще не активна или нет данных, по умолчанию ход player1
+          setCurrentTurn(1);
+          setIsMyTurn(isPlayer1);
+          
+          logger.info("Game info loaded (default state)", {
+            gamePubkey,
+            player1: gameData.game.player1,
+            player2: gameData.game.player2,
+            isPlayer1,
+            myPubkey,
+            status: gameState?.status || "Unknown",
+          });
+        }
       } catch (error) {
         logger.error("Failed to load game info", error as Error, { gamePubkey });
       }
@@ -96,20 +118,27 @@ export default function GameScreen({ gamePubkey, onBack }: GameScreenProps) {
     logger.debug("Refreshing game state from blockchain", { gamePubkey });
     try {
       const gameState = await getGameState(gamePubkey);
-      if (gameState) {
+      if (gameState && gameState.status === "Active") {
         logger.info("Game state refreshed", {
           gamePubkey,
           status: gameState.status,
-          currentTurn: gameState.status === "Active" ? "Active" : "Unknown",
+          currentTurn: gameState.currentTurn,
         });
 
-        // Если игра активна, можно обновить текущий ход из блокчейна
-        // Пока используем локальное состояние
+        // Обновляем текущий ход из блокчейна
+        if (gameState.currentTurn) {
+          setCurrentTurn(gameState.currentTurn);
+          // Обновляем isMyTurn на основе реального currentTurn
+          if (gameInfo) {
+            const isPlayer1 = myPubkey === gameInfo.player1;
+            setIsMyTurn((gameState.currentTurn === 1 && isPlayer1) || (gameState.currentTurn === 2 && !isPlayer1));
+          }
+        }
       }
     } catch (error) {
       logger.error("Failed to refresh game state", error as Error, { gamePubkey });
     }
-  }, [gamePubkey]);
+  }, [gamePubkey, gameInfo, myPubkey]);
 
   // Отправка полностью подписанной транзакции в блокчейн
   const submitSignedTransactionToBlockchain = useCallback(
