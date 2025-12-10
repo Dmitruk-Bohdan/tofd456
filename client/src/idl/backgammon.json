@@ -1,0 +1,591 @@
+{
+  "address": "DmEwwQX5n6mt2Hgv923xmVLDQpWWcvYmTcm3yJbZ5xRr",
+  "metadata": {
+    "name": "backgammon",
+    "version": "0.1.0",
+    "spec": "0.1.0",
+    "description": "Created with Anchor"
+  },
+  "docs": [
+    "Основной модуль программы.",
+    "В терминах Anchor сюда кладутся инструкции (функции, которые можно вызвать снаружи)."
+  ],
+  "instructions": [
+    {
+      "name": "cancel_before_join",
+      "docs": [
+        "Отмена игры до присоединения второго игрока.",
+        "",
+        "Используется для случая, когда второй игрок так и не зашёл в игру.",
+        "Возвращает весь банк (ставку) первому игроку."
+      ],
+      "discriminator": [
+        46,
+        207,
+        108,
+        81,
+        27,
+        179,
+        95,
+        34
+      ],
+      "accounts": [
+        {
+          "name": "game",
+          "docs": [
+            "Аккаунт игры."
+          ],
+          "writable": true
+        },
+        {
+          "name": "player1",
+          "docs": [
+            "Первый игрок, который создавал игру и может её отменить."
+          ],
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "system_program",
+          "docs": [
+            "Системная программа Solana."
+          ],
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": []
+    },
+    {
+      "name": "finish_game",
+      "docs": [
+        "Завершение игры и вывод банка победителю.",
+        "",
+        "Валидация результата (кто на самом деле выиграл) делается оффчейн,",
+        "но вывести банк можно только, если транзакцию подписали ОБА игрока."
+      ],
+      "discriminator": [
+        168,
+        120,
+        86,
+        113,
+        64,
+        116,
+        2,
+        146
+      ],
+      "accounts": [
+        {
+          "name": "game",
+          "docs": [
+            "Аккаунт игры."
+          ],
+          "writable": true
+        },
+        {
+          "name": "player1",
+          "docs": [
+            "Первый игрок, должен совпадать с game.player1."
+          ],
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "player2",
+          "docs": [
+            "Второй игрок, должен совпадать с game.player2."
+          ],
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "system_program",
+          "docs": [
+            "Системная программа Solana, нужна для transfer через CPI."
+          ],
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": [
+        {
+          "name": "winner",
+          "type": "pubkey"
+        }
+      ]
+    },
+    {
+      "name": "force_refund",
+      "docs": [
+        "Аварийный возврат средств обоим игрокам по тайм-ауту.",
+        "",
+        "Если игра зависла в Active (кто-то не ходит / не подписывает),",
+        "и с момента последнего действия прошло достаточно слотов, то",
+        "банк делится между игроками пропорционально их вкладам."
+      ],
+      "discriminator": [
+        127,
+        173,
+        30,
+        92,
+        164,
+        123,
+        109,
+        177
+      ],
+      "accounts": [
+        {
+          "name": "game",
+          "docs": [
+            "Аккаунт игры."
+          ],
+          "writable": true
+        },
+        {
+          "name": "player1",
+          "docs": [
+            "Первый игрок."
+          ],
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "player2",
+          "docs": [
+            "Второй игрок."
+          ],
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "system_program",
+          "docs": [
+            "Системная программа Solana."
+          ],
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": []
+    },
+    {
+      "name": "init_game",
+      "docs": [
+        "Инициализация новой игры.",
+        "",
+        "Аналог C# метода:",
+        "public Result InitGame(Context<InitGame> ctx, ulong gameId, ...)"
+      ],
+      "discriminator": [
+        251,
+        46,
+        12,
+        208,
+        184,
+        148,
+        157,
+        73
+      ],
+      "accounts": [
+        {
+          "name": "game",
+          "docs": [
+            "Аккаунт игры. Создаётся этой инструкцией."
+          ],
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "player1",
+          "docs": [
+            "Первый игрок, он платит за создание аккаунта и вносит первую ставку."
+          ],
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "system_program",
+          "docs": [
+            "Стандартная системная программа Solana, нужна для создания аккаунта."
+          ],
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": [
+        {
+          "name": "game_id",
+          "type": "u64"
+        },
+        {
+          "name": "stake_lamports",
+          "type": "u64"
+        },
+        {
+          "name": "move_fee_lamports",
+          "type": "u64"
+        },
+        {
+          "name": "player2_pubkey",
+          "type": "pubkey"
+        }
+      ]
+    },
+    {
+      "name": "join_game",
+      "docs": [
+        "Присоединение второго игрока к уже созданной игре."
+      ],
+      "discriminator": [
+        107,
+        112,
+        18,
+        38,
+        56,
+        173,
+        60,
+        128
+      ],
+      "accounts": [
+        {
+          "name": "game",
+          "docs": [
+            "Аккаунт игры. Уже должен быть инициализирован через init_game."
+          ],
+          "writable": true
+        },
+        {
+          "name": "player2",
+          "docs": [
+            "Второй игрок, вносит свою стартовую ставку."
+          ],
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "system_program",
+          "docs": [
+            "Системная программа Solana."
+          ],
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": []
+    },
+    {
+      "name": "make_move",
+      "docs": [
+        "Ход одного из игроков.",
+        "",
+        "Валидация правил нард делается оффчейн, а здесь мы:",
+        "- проверяем, что ходит правильный игрок;",
+        "- списываем move_fee_lamports с ходящего игрока в пользу банка;",
+        "- обновляем board_state;",
+        "- переключаем очередь хода."
+      ],
+      "discriminator": [
+        78,
+        77,
+        152,
+        203,
+        222,
+        211,
+        208,
+        233
+      ],
+      "accounts": [
+        {
+          "name": "game",
+          "docs": [
+            "Аккаунт игры."
+          ],
+          "writable": true
+        },
+        {
+          "name": "player1",
+          "docs": [
+            "Первый игрок, должен совпадать с game.player1."
+          ],
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "player2",
+          "docs": [
+            "Второй игрок, должен совпадать с game.player2."
+          ],
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "system_program",
+          "docs": [
+            "Системная программа Solana, нужна для transfer через CPI."
+          ],
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": [
+        {
+          "name": "new_board_points",
+          "type": {
+            "array": [
+              "i8",
+              24
+            ]
+          }
+        },
+        {
+          "name": "new_dice",
+          "type": {
+            "array": [
+              "u8",
+              2
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "manual_refund",
+      "docs": [
+        "Ручной (взаимный) возврат средств обоим игрокам без тайм-аута.",
+        "",
+        "Требует подписи ОБОИХ игроков. Логика распределения средств",
+        "такая же, как в force_refund: каждый получает свой депозит +",
+        "все уплаченные им ходы, при этом сумма вкладов должна совпадать с pot_lamports."
+      ],
+      "discriminator": [
+        179,
+        27,
+        252,
+        149,
+        128,
+        64,
+        224,
+        147
+      ],
+      "accounts": [
+        {
+          "name": "game",
+          "docs": [
+            "Аккаунт игры."
+          ],
+          "writable": true
+        },
+        {
+          "name": "player1",
+          "docs": [
+            "Первый игрок."
+          ],
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "player2",
+          "docs": [
+            "Второй игрок."
+          ],
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "system_program",
+          "docs": [
+            "Системная программа Solana."
+          ],
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": []
+    }
+  ],
+  "accounts": [
+    {
+      "name": "GameState",
+      "discriminator": [
+        144,
+        94,
+        208,
+        172,
+        248,
+        99,
+        134,
+        120
+      ]
+    }
+  ],
+  "errors": [
+    {
+      "code": 6000,
+      "name": "GameNotWaitingForPlayer2",
+      "msg": "Game is not waiting for player 2"
+    },
+    {
+      "code": 6001,
+      "name": "InvalidPlayer2",
+      "msg": "Invalid player 2"
+    },
+    {
+      "code": 6002,
+      "name": "GameNotActive",
+      "msg": "Game is not active"
+    },
+    {
+      "code": 6003,
+      "name": "NotPlayersTurn",
+      "msg": "It's not this player's turn"
+    },
+    {
+      "code": 6004,
+      "name": "InvalidCurrentTurn",
+      "msg": "Invalid current_turn value"
+    },
+    {
+      "code": 6005,
+      "name": "MathOverflow",
+      "msg": "Math overflow"
+    },
+    {
+      "code": 6006,
+      "name": "InvalidWinner",
+      "msg": "Invalid winner"
+    },
+    {
+      "code": 6007,
+      "name": "InvalidPlayer1",
+      "msg": "Invalid player 1"
+    },
+    {
+      "code": 6008,
+      "name": "NotEnoughBalanceForMove",
+      "msg": "Not enough balance to pay move fee"
+    },
+    {
+      "code": 6009,
+      "name": "TimeoutNotReached",
+      "msg": "Force refund timeout not reached yet"
+    },
+    {
+      "code": 6010,
+      "name": "InconsistentPot",
+      "msg": "Inconsistent pot and recorded contributions"
+    }
+  ],
+  "types": [
+    {
+      "name": "GameState",
+      "docs": [
+        "Это on-chain аккаунт, который хранит состояние одной игры."
+      ],
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "player1",
+            "type": "pubkey"
+          },
+          {
+            "name": "player2",
+            "type": "pubkey"
+          },
+          {
+            "name": "game_id",
+            "type": "u64"
+          },
+          {
+            "name": "stake_lamports",
+            "type": "u64"
+          },
+          {
+            "name": "move_fee_lamports",
+            "type": "u64"
+          },
+          {
+            "name": "pot_lamports",
+            "type": "u64"
+          },
+          {
+            "name": "player1_deposit",
+            "type": "u64"
+          },
+          {
+            "name": "player2_deposit",
+            "type": "u64"
+          },
+          {
+            "name": "player1_fees_paid",
+            "type": "u64"
+          },
+          {
+            "name": "player2_fees_paid",
+            "type": "u64"
+          },
+          {
+            "name": "last_activity_slot",
+            "type": "u64"
+          },
+          {
+            "name": "move_index",
+            "type": "u64"
+          },
+          {
+            "name": "board_points",
+            "type": {
+              "array": [
+                "i8",
+                24
+              ]
+            }
+          },
+          {
+            "name": "dice",
+            "type": {
+              "array": [
+                "u8",
+                2
+              ]
+            }
+          },
+          {
+            "name": "current_turn",
+            "type": "u8"
+          },
+          {
+            "name": "status",
+            "type": {
+              "defined": {
+                "name": "GameStatus"
+              }
+            }
+          },
+          {
+            "name": "winner",
+            "type": "pubkey"
+          },
+          {
+            "name": "bump",
+            "type": "u8"
+          }
+        ]
+      }
+    },
+    {
+      "name": "GameStatus",
+      "docs": [
+        "Enum тоже хранится on-chain, поэтому нужен Serialize/Deserialize.",
+        "Для логирования через `{:?}` добавляем также Debug."
+      ],
+      "type": {
+        "kind": "enum",
+        "variants": [
+          {
+            "name": "WaitingForPlayer2"
+          },
+          {
+            "name": "Active"
+          },
+          {
+            "name": "Finished"
+          }
+        ]
+      }
+    }
+  ]
+}
