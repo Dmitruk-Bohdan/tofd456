@@ -585,71 +585,11 @@ wss.on("connection", (ws: WebSocket) => {
           winner: message.winnerPubkey,
           clientsNotified: notifiedCount,
         });
-      } else if (message.type === "manual_request") {
-        // Ручной взаимный рефанд: пересылаем обоим игрокам (по аналогии с move_request)
-        logger.info("Manual refund request received", {
-          gamePubkey: message.gamePubkey,
-          fromPlayer: message.playerPubkey,
-        });
-
-        let forwardedCount = 0;
-        wss.clients.forEach((client) => {
-          if (client.readyState === WebSocket.OPEN && clientSubscriptions.has(client)) {
-            const subscription = clientSubscriptions.get(client);
-            if (subscription?.gamePubkey === message.gamePubkey) {
-              client.send(JSON.stringify(message));
-              forwardedCount++;
-            }
-          }
-        });
-
-        logger.info("Manual refund request forwarded", {
-          gamePubkey: message.gamePubkey,
-          clientsNotified: forwardedCount,
-        });
-      } else if (message.type === "manual_signed") {
-        // Подписанный manual_refund отправляется обратно инициатору
-        logger.info("Signed manual refund received", {
-          gamePubkey: message.gamePubkey,
-          fromPlayer: message.playerPubkey,
-        });
-
-        const gameStmt = db.prepare("SELECT player1, player2 FROM games WHERE game_pubkey = ?");
-        const game = gameStmt.get(message.gamePubkey) as { player1: string; player2: string } | undefined;
-
-        if (!game) {
-          logger.warn("Game not found for signed manual", { gamePubkey: message.gamePubkey });
-          ws.send(JSON.stringify({ type: "error", error: "Game not found" }));
-          return;
-        }
-
-        const targetPlayer = message.playerPubkey === game.player1 ? game.player2 : game.player1;
-
-        logger.info("Forwarding signed manual to requester", {
-          gamePubkey: message.gamePubkey,
-          fromPlayer: message.playerPubkey,
-          toPlayer: targetPlayer,
-        });
-
-        let forwardedCount = 0;
-        wss.clients.forEach((client) => {
-          if (client.readyState === WebSocket.OPEN && clientSubscriptions.has(client)) {
-            const subscription = clientSubscriptions.get(client);
-            if (subscription?.gamePubkey === message.gamePubkey) {
-              client.send(JSON.stringify(message));
-              forwardedCount++;
-            }
-          }
-        });
-
-        logger.info("Signed manual forwarded", {
-          gamePubkey: message.gamePubkey,
-          clientsNotified: forwardedCount,
-        });
       } else if (message.type === "manual_finished") {
-        // Бродкастим завершение manual_refund
-        logger.info("Manual refund finished notification received", {
+        // Уведомление, что транзакция manual_refund подтверждена
+        logger.info("Manual finished notification received", {
           gamePubkey: message.gamePubkey,
+          requester: message.requesterPubkey,
         });
 
         let notifiedCount = 0;
@@ -663,8 +603,9 @@ wss.on("connection", (ws: WebSocket) => {
           }
         });
 
-        logger.info("Manual refund finished broadcasted", {
+        logger.info("Manual finished broadcasted", {
           gamePubkey: message.gamePubkey,
+          requester: message.requesterPubkey,
           clientsNotified: notifiedCount,
         });
       } else {

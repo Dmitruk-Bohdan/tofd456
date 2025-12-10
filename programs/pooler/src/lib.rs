@@ -450,15 +450,40 @@ pub mod backgammon {
         Ok(())
     }
 
-    /// Ручной (взаимный) возврат средств обоим игрокам без тайм-аута.
+    /// Ручной возврат средств обоим игрокам одним подписантом.
     ///
-    /// Требует подписи ОБОИХ игроков. Логика распределения средств
-    /// такая же, как в force_refund: каждый получает свой депозит +
-    /// все уплаченные им ходы, при этом сумма вкладов должна совпадать с pot_lamports.
-    pub fn manual_refund(ctx: Context<ForceRefund>) -> Result<()> {
+    /// Требует подписи только одного игрока (requester), который также платит комиссию.
+    /// Возвращает обоим игрокам их депозиты + все уплаченные комиссии за ходы.
+    pub fn manual_refund(ctx: Context<ManualRefundOneSigner>) -> Result<()> {
         let game = &mut ctx.accounts.game;
 
         require!(game.status == GameStatus::Active, ErrorCode::GameNotActive);
+
+        // Валидация игроков
+        require_keys_eq!(
+            ctx.accounts.player1.key(),
+            game.player1,
+            ErrorCode::InvalidPlayer1
+        );
+        require_keys_eq!(
+            ctx.accounts.player2.key(),
+            game.player2,
+            ErrorCode::InvalidPlayer2
+        );
+
+        // requester должен быть одним из игроков
+        let requester = ctx.accounts.requester.key();
+        require!(
+            requester == game.player1 || requester == game.player2,
+            ErrorCode::InvalidPlayer
+        );
+
+        msg!(
+            "manual_refund: requester={}, game_id={}, pot={}",
+            requester,
+            game.game_id,
+            game.pot_lamports
+        );
 
         let total_p1 = game
             .player1_deposit
@@ -482,7 +507,7 @@ pub mod backgammon {
             .ok_or(ErrorCode::MathOverflow)?;
         require!(total == pot, ErrorCode::InconsistentPot);
 
-        // Возвращаем каждому ровно его вклад.
+        // Возвращаем каждому ровно его вклад
         if total_p1 > 0 {
             **game.to_account_info().try_borrow_mut_lamports()? -= total_p1;
             **ctx
@@ -507,6 +532,12 @@ pub mod backgammon {
         game.player1_fees_paid = 0;
         game.player2_fees_paid = 0;
         game.status = GameStatus::Finished;
+
+        msg!(
+            "manual_refund: completed, game_id={}, requester={}",
+            game.game_id,
+            requester
+        );
 
         Ok(())
     }
@@ -604,6 +635,31 @@ pub struct ForceRefund<'info> {
     pub system_program: Program<'info, System>,
 }
 
+/// Ручной возврат одним подписантом (requester).
+#[derive(Accounts)]
+pub struct ManualRefundOneSigner<'info> {
+    /// Аккаунт игры.
+    #[account(mut)]
+    pub game: Account<'info, GameState>,
+
+    /// CHECK: address constraint ensures this is game.player1; balance only credited
+    #[account(mut, address = game.player1)]
+    pub player1: AccountInfo<'info>,
+
+    /// CHECK: address constraint ensures this is game.player2; balance only credited
+    #[account(mut, address = game.player2)]
+    pub player2: AccountInfo<'info>,
+
+    /// Инициатор запроса (один из игроков), платит комиссию за транзакцию.
+    #[account(mut)]
+    pub requester: Signer<'info>,
+
+    /// Системная программа Solana.
+    pub system_program: Program<'info, System>,
+}
+
+// Комментарий для содержимого хода.
+
 /// Контекст для совершения хода.
 #[derive(Accounts)]
 pub struct MakeMove<'info> {
@@ -668,6 +724,9 @@ pub enum ErrorCode {
     
     #[msg("Invalid player 1")]
     InvalidPlayer1,
+
+    #[msg("Invalid player")]
+    InvalidPlayer,
 
     #[msg("Not enough balance to pay move fee")]
     NotEnoughBalanceForMove,

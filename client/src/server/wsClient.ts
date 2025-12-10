@@ -33,6 +33,7 @@ export interface WSMessage {
   transactionData?: number[]; // Сериализованная транзакция (массив байтов)
   newTurn?: number; // 1 = player1, 2 = player2
   winnerPubkey?: string;
+  requesterPubkey?: string; // Для manual_refund
 }
 
 type MessageHandler = (message: WSMessage) => void;
@@ -284,62 +285,6 @@ class WebSocketClient {
   }
 
   /**
-   * Отправляет запрос на ручной рефанд (manual_refund).
-   */
-  sendManualRequest(gamePubkey: string, message: WSMessage): void {
-    logger.info("sendManualRequest called", { gamePubkey, messageType: message.type });
-
-    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
-      const error = new Error("WebSocket not connected");
-      logger.error("Cannot send manual request", error, { readyState: this.ws?.readyState });
-      return;
-    }
-
-    logger.debug("Sending manual request message", { message });
-    this.ws.send(JSON.stringify(message));
-    logger.info("Manual request sent", { gamePubkey });
-  }
-
-  /**
-   * Отправляет подписанный manual_refund обратно инициатору.
-   */
-  sendManualSigned(gamePubkey: string, message: WSMessage): void {
-    logger.info("sendManualSigned called", { gamePubkey, messageType: message.type });
-
-    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
-      const error = new Error("WebSocket not connected");
-      logger.error("Cannot send signed manual", error, { readyState: this.ws?.readyState });
-      return;
-    }
-
-    logger.debug("Sending signed manual message", { message });
-    this.ws.send(JSON.stringify(message));
-    logger.info("Signed manual sent", { gamePubkey });
-  }
-
-  /**
-   * Отправляет уведомление о завершении manual_refund.
-   */
-  sendManualFinished(gamePubkey: string): void {
-    logger.info("sendManualFinished called", { gamePubkey });
-
-    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
-      const error = new Error("WebSocket not connected");
-      logger.error("Cannot send manual finished", error, { readyState: this.ws?.readyState });
-      return;
-    }
-
-    const message: WSMessage = {
-      type: "manual_finished",
-      gamePubkey,
-    };
-
-    logger.debug("Sending manual finished message", { message });
-    this.ws.send(JSON.stringify(message));
-    logger.info("Manual finished message sent", { gamePubkey });
-  }
-
-  /**
    * Отправляет сообщение о завершении хода на сервер.
    */
   sendTurnCompleted(gamePubkey: string, playerPubkey: string, newTurn: number): void {
@@ -361,6 +306,63 @@ class WebSocketClient {
     logger.debug("Sending turn completed message", { message });
     this.ws.send(JSON.stringify(message));
     logger.info("Turn completed message sent", { gamePubkey, newTurn });
+  }
+
+  /**
+   * Отправляет запрос на manual refund (manual_request).
+   */
+  sendManualRequest(gamePubkey: string, message: WSMessage): void {
+    logger.info("sendManualRequest called", { gamePubkey, messageType: message.type });
+
+    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
+      const error = new Error("WebSocket not connected");
+      logger.error("Cannot send manual request", error, { readyState: this.ws?.readyState });
+      return;
+    }
+
+    logger.debug("Sending manual request message", { message });
+    this.ws.send(JSON.stringify(message));
+    logger.info("Manual request sent", { gamePubkey });
+  }
+
+  /**
+   * Отправляет подписанный manual refund обратно запросившему игроку (manual_signed).
+   */
+  sendManualSigned(gamePubkey: string, message: WSMessage): void {
+    logger.info("sendManualSigned called", { gamePubkey, messageType: message.type });
+
+    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
+      const error = new Error("WebSocket not connected");
+      logger.error("Cannot send signed manual", error, { readyState: this.ws?.readyState });
+      return;
+    }
+
+    logger.debug("Sending signed manual message", { message });
+    this.ws.send(JSON.stringify(message));
+    logger.info("Signed manual sent", { gamePubkey });
+  }
+
+  /**
+   * Отправляет уведомление об окончании manual refund (manual_finished).
+   */
+  sendManualFinished(gamePubkey: string, requesterPubkey: string): void {
+    logger.info("sendManualFinished called", { gamePubkey, requesterPubkey });
+
+    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
+      const error = new Error("WebSocket not connected");
+      logger.error("Cannot send manual finished", error, { readyState: this.ws?.readyState });
+      return;
+    }
+
+    const message: WSMessage = {
+      type: "manual_finished",
+      gamePubkey,
+      requesterPubkey,
+    };
+
+    logger.debug("Sending manual finished message", { message });
+    this.ws.send(JSON.stringify(message));
+    logger.info("Manual finished message sent", { gamePubkey });
   }
 
   /**
