@@ -35,12 +35,20 @@ export default function GameScreen({ gamePubkey, onBack }: GameScreenProps) {
   const [isMyTurn, setIsMyTurn] = useState(false);
   const [isRolling, setIsRolling] = useState(false);
   const [isProcessingMove, setIsProcessingMove] = useState(false);
+  const [isProcessingFinish, setIsProcessingFinish] = useState(false);
   const [selectedCell, setSelectedCell] = useState<number | null>(null);
   const [pendingMove, setPendingMove] = useState<{
     boardPoints: number[];
     dice: [number, number];
     moveIndex: number;
     transactionData?: number[];
+  } | null>(null);
+  const [pendingFinish, setPendingFinish] = useState<{
+    winnerPubkey: string;
+    transactionData: number[];
+  } | null>(null);
+  const [winnerBanner, setWinnerBanner] = useState<{
+    winnerPubkey: string;
   } | null>(null);
 
   const provider = getProvider();
@@ -203,6 +211,47 @@ export default function GameScreen({ gamePubkey, onBack }: GameScreenProps) {
       }
     },
     [gamePubkey, refreshGameState, currentTurn, myPubkey]
+  );
+
+  // Отправка finish_game после двух подписей
+  const submitFinishTransaction = useCallback(
+    async (signedTx: Transaction, winnerPubkey: string) => {
+      logger.info("Submitting finish transaction to blockchain", {
+        gamePubkey,
+        winnerPubkey,
+        signaturesCount: signedTx.signatures.length,
+      });
+
+      const provider = getProvider();
+      if (!provider) {
+        throw new Error("Provider not initialized");
+      }
+      const connection = provider.connection ?? (await import("../solana/anchorClient")).getConnection();
+
+      const serializedTx = signedTx.serialize({
+        requireAllSignatures: true,
+        verifySignatures: false,
+      });
+
+      const signature = await connection.sendRawTransaction(serializedTx, {
+        skipPreflight: false,
+        maxRetries: 3,
+      });
+
+      logger.info("Finish transaction sent, waiting for confirmation", { signature });
+      await connection.confirmTransaction(signature, "confirmed");
+
+      logger.info("Finish transaction confirmed", { signature, winnerPubkey });
+
+      wsClient.sendGameFinished(gamePubkey, winnerPubkey);
+      setWinnerBanner({ winnerPubkey });
+      setIsMyTurn(false);
+      setTimeout(() => {
+        setWinnerBanner(null);
+        onBack();
+      }, 5000);
+    },
+    [gamePubkey, onBack]
   );
 
   // Отправка хода в блокчейн (после получения подписи от второго игрока) - fallback метод
@@ -455,6 +504,61 @@ export default function GameScreen({ gamePubkey, onBack }: GameScreenProps) {
             pendingMoveCleared: true,
           });
         }
+      } else if (message.type === "finish_request" && message.gamePubkey === gamePubkey) {
+        logger.info("Received finish request for signature", {
+          winnerPubkey: message.winnerPubkey,
+          hasTransactionData: !!message.transactionData,
+        });
+
+        if (message.transactionData && message.winnerPubkey) {
+          setPendingFinish({
+            winnerPubkey: message.winnerPubkey,
+            transactionData: message.transactionData,
+          });
+          logger.info("Pending finish set successfully", {
+            winnerPubkey: message.winnerPubkey,
+            transactionDataLength: message.transactionData.length,
+          });
+        }
+      } else if (message.type === "finish_signed" && message.gamePubkey === gamePubkey) {
+        // Только инициатор (не signer) должен обработать
+        if (message.playerPubkey === myPubkey) {
+          logger.debug("Ignoring finish_signed - we are the signer");
+          return;
+        }
+
+        logger.info("Received signed finish, submitting to blockchain", {
+          winnerPubkey: message.winnerPubkey,
+          hasTransactionData: !!message.transactionData,
+        });
+
+        if (message.transactionData && message.winnerPubkey) {
+          const txBuffer = Buffer.from(message.transactionData);
+          const tx = Transaction.from(txBuffer);
+
+          logger.info("Finish transaction deserialized", {
+            signaturesCount: tx.signatures.length,
+            signatures: tx.signatures.map((sig, idx) => ({
+              index: idx,
+              publicKey: sig.publicKey.toBase58(),
+              signature: sig.signature ? Buffer.from(sig.signature).toString("base64").substring(0, 16) + "..." : "null",
+            })),
+          });
+
+          submitFinishTransaction(tx, message.winnerPubkey).catch((error: unknown) => {
+            logger.error("Error submitting finish transaction", error instanceof Error ? error : new Error(String(error)));
+          });
+        }
+      } else if (message.type === "game_finished" && message.gamePubkey === gamePubkey) {
+        logger.info("Game finished notification received", {
+          winner: message.winnerPubkey,
+        });
+        setWinnerBanner({ winnerPubkey: message.winnerPubkey || "Unknown" });
+        setIsMyTurn(false);
+        setTimeout(() => {
+          setWinnerBanner(null);
+          onBack();
+        }, 5000);
       }
     };
 
@@ -467,7 +571,7 @@ export default function GameScreen({ gamePubkey, onBack }: GameScreenProps) {
     // НЕ включаем pendingMove в зависимости, чтобы не пересоздавать handlers при его изменении
     // pendingMove используется внутри handler через замыкание
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [gamePubkey, myPubkey, submitMoveToBlockchain, submitSignedTransactionToBlockchain, refreshGameState, gameInfo]);
+  }, [gamePubkey, myPubkey, submitMoveToBlockchain, submitSignedTransactionToBlockchain, submitFinishTransaction, refreshGameState, gameInfo]);
 
   // Бросок кубиков
   const rollDice = useCallback(async () => {
@@ -596,6 +700,67 @@ export default function GameScreen({ gamePubkey, onBack }: GameScreenProps) {
     [gamePubkey]
   );
 
+  // Формирование транзакции finish_game
+  const createFinishTransaction = useCallback(
+    async (winnerPubkey: PublicKey): Promise<Transaction> => {
+      logger.info("Creating finish transaction", {
+        gamePubkey,
+        winner: winnerPubkey.toBase58(),
+      });
+
+      const provider = getProvider();
+      if (!provider) {
+        throw new Error("Provider not initialized");
+      }
+
+      const connection = provider.connection ?? (await import("../solana/anchorClient")).getConnection();
+
+      const gameState = await getGameState(gamePubkey);
+      if (!gameState) {
+        throw new Error("Game state not found");
+      }
+
+      const player1Pubkey = new PublicKey(gameState.player1);
+      const player2Pubkey = new PublicKey(gameState.player2);
+      const gamePubkeyObj = new PublicKey(gamePubkey);
+
+      const finishIdl = (idlJson.instructions as { name: string; discriminator: number[] }[]).find(
+        (ix) => ix.name === "finish_game"
+      );
+      if (!finishIdl) {
+        throw new Error("finish_game instruction not found in IDL");
+      }
+
+      const discriminator = Buffer.from(finishIdl.discriminator);
+      const data = Buffer.concat([discriminator, winnerPubkey.toBuffer()]);
+
+      const ix = new TransactionInstruction({
+        programId: PROGRAM_ID,
+        keys: [
+          { pubkey: gamePubkeyObj, isSigner: false, isWritable: true },
+          { pubkey: player1Pubkey, isSigner: true, isWritable: true },
+          { pubkey: player2Pubkey, isSigner: true, isWritable: true },
+          { pubkey: SystemProgram.programId, isSigner: false, isWritable: false },
+        ],
+        data,
+      });
+
+      const tx = new Transaction().add(ix);
+      const { blockhash } = await connection.getLatestBlockhash("finalized");
+      tx.recentBlockhash = blockhash;
+      tx.feePayer = winnerPubkey;
+
+      logger.info("Finish transaction created with recentBlockhash", {
+        gamePubkey: gamePubkeyObj.toBase58(),
+        winner: winnerPubkey.toBase58(),
+        blockhash: blockhash.substring(0, 8) + "...",
+      });
+
+      return tx;
+    },
+    [gamePubkey]
+  );
+
   // Подтверждение хода
   const confirmMove = useCallback(async () => {
     if (!isMyTurn || !dice || selectedCell === null || isProcessingMove) return;
@@ -716,6 +881,60 @@ export default function GameScreen({ gamePubkey, onBack }: GameScreenProps) {
     }
   }, [isMyTurn, dice, selectedCell, boardPoints, gamePubkey, myPubkey, isProcessingMove, createMoveTransaction]);
 
+  // Завершение игры (кнопка "Я выиграл")
+  const confirmWin = useCallback(async () => {
+    if (!isMyTurn || isProcessingFinish) return;
+
+    logger.info("Confirming win", { gamePubkey, myPubkey });
+    setIsProcessingFinish(true);
+
+    try {
+      const myPubkeyObj = new PublicKey(myPubkey);
+      const tx = await createFinishTransaction(myPubkeyObj);
+
+      const myKeypair = getCurrentKeypair();
+      if (!myKeypair) {
+        throw new Error("Keypair not found");
+      }
+      tx.partialSign(myKeypair);
+
+      logger.info("Finish transaction signed by me", {
+        myPubkey,
+        signaturesCount: tx.signatures.length,
+        signatures: tx.signatures.map((sig, idx) => ({
+          index: idx,
+          publicKey: sig.publicKey.toBase58(),
+          signature: sig.signature ? Buffer.from(sig.signature).toString("base64").substring(0, 16) + "..." : "null",
+        })),
+      });
+
+      const serializedTx = tx.serialize({ requireAllSignatures: false, verifySignatures: false });
+      logger.info("Finish transaction serialized", { serializedLength: serializedTx.length });
+
+      const finishRequest: WSMessage = {
+        type: "finish_request",
+        gamePubkey,
+        playerPubkey: myPubkey,
+        transactionData: Array.from(serializedTx),
+        winnerPubkey: myPubkey,
+      };
+
+      logger.info("Sending finish request to opponent via WebSocket", { finishRequest });
+      wsClient.sendFinishRequest(gamePubkey, finishRequest);
+
+      setPendingFinish({
+        winnerPubkey: myPubkey,
+        transactionData: Array.from(serializedTx),
+      });
+
+      setIsProcessingFinish(false);
+    } catch (error) {
+      logger.error("Error confirming win", error as Error, { gamePubkey });
+      alert("Failed to confirm win. Please try again.");
+      setIsProcessingFinish(false);
+    }
+  }, [createFinishTransaction, gamePubkey, isMyTurn, isProcessingFinish, myPubkey]);
+
 
   // Обработка pending move (когда пришёл запрос на подпись)
   const handlePendingMoveSignature = useCallback(async () => {
@@ -821,6 +1040,74 @@ export default function GameScreen({ gamePubkey, onBack }: GameScreenProps) {
     }
   }, [pendingMove, gamePubkey, myPubkey]);
 
+  // Обработка pending finish (подписание победы вторым игроком)
+  const handlePendingFinishSignature = useCallback(async () => {
+    if (!pendingFinish || !pendingFinish.transactionData) return;
+
+    logger.info("Signing pending finish", {
+      gamePubkey,
+      pendingFinish: {
+        ...pendingFinish,
+        transactionData: `[${pendingFinish.transactionData.length} bytes]`,
+      },
+      myPubkey,
+    });
+
+    try {
+      const myKeypair = getCurrentKeypair();
+      if (!myKeypair) {
+        throw new Error("Keypair not available");
+      }
+
+      const txBuffer = Buffer.from(pendingFinish.transactionData);
+      const tx = Transaction.from(txBuffer);
+
+      if (!tx.recentBlockhash) {
+        const provider = getProvider();
+        if (!provider) throw new Error("Provider not initialized");
+        const connection = provider.connection ?? (await import("../solana/anchorClient")).getConnection();
+        const { blockhash } = await connection.getLatestBlockhash("finalized");
+        tx.recentBlockhash = blockhash;
+      }
+
+      tx.partialSign(myKeypair);
+
+      logger.info("Finish transaction signed by me", {
+        myPubkey: myKeypair.publicKey.toBase58(),
+        signaturesCount: tx.signatures.length,
+        signatures: tx.signatures.map((sig, idx) => ({
+          index: idx,
+          publicKey: sig.publicKey.toBase58(),
+          signature: sig.signature ? Buffer.from(sig.signature).toString("base64").substring(0, 16) + "..." : "null",
+        })),
+      });
+
+      const serializedTx = tx.serialize({ requireAllSignatures: true, verifySignatures: false });
+      logger.info("Signed finish serialized", { serializedLength: serializedTx.length });
+
+      const signedMessage: WSMessage = {
+        type: "finish_signed",
+        gamePubkey,
+        playerPubkey: myPubkey,
+        transactionData: Array.from(serializedTx),
+        winnerPubkey: pendingFinish.winnerPubkey,
+      };
+
+      wsClient.sendFinishSigned(gamePubkey, signedMessage);
+      setPendingFinish(null);
+    } catch (error) {
+      logger.error("Error signing pending finish", error as Error, { gamePubkey });
+      alert("Failed to sign finish. Please try again.");
+    }
+  }, [gamePubkey, myPubkey, pendingFinish]);
+
+  // Автоподпись pending finish, когда это не наш ход (мы второй подписант)
+  useEffect(() => {
+    if (!isMyTurn && pendingFinish) {
+      handlePendingFinishSignature();
+    }
+  }, [handlePendingFinishSignature, isMyTurn, pendingFinish]);
+
   return (
     <div style={{ width: "100%", padding: "40px", backgroundColor: "white" }}>
       <div style={{ marginBottom: "20px" }}>
@@ -838,6 +1125,23 @@ export default function GameScreen({ gamePubkey, onBack }: GameScreenProps) {
           ← Back to Menu
         </button>
       </div>
+
+      {winnerBanner && (
+        <div
+          style={{
+            padding: "16px",
+            backgroundColor: "#d4edda",
+            border: "2px solid #28a745",
+            borderRadius: "6px",
+            color: "#155724",
+            marginBottom: "16px",
+            fontSize: "18px",
+            fontWeight: "bold",
+          }}
+        >
+          Победил: {winnerBanner.winnerPubkey.substring(0, 8)}...
+        </div>
+      )}
 
       <h2 style={{ color: "#000", marginBottom: "20px" }}>Game: {gamePubkey.substring(0, 8)}...</h2>
 
@@ -921,7 +1225,7 @@ export default function GameScreen({ gamePubkey, onBack }: GameScreenProps) {
       )}
 
       {/* Кнопки управления */}
-      <div style={{ display: "flex", gap: "10px", marginBottom: "20px" }}>
+      <div style={{ display: "flex", gap: "10px", marginBottom: "20px", flexWrap: "wrap" }}>
         {!dice && isMyTurn && (
           <button
             onClick={rollDice}
@@ -957,6 +1261,24 @@ export default function GameScreen({ gamePubkey, onBack }: GameScreenProps) {
             {isProcessingMove ? "Processing..." : "Confirm Move"}
           </button>
         )}
+
+        {isMyTurn && (
+          <button
+            onClick={confirmWin}
+            disabled={isProcessingFinish}
+            style={{
+              padding: "12px 24px",
+              fontSize: "16px",
+              backgroundColor: isProcessingFinish ? "#ccc" : "#d9534f",
+              color: "white",
+              border: "none",
+              borderRadius: "4px",
+              cursor: isProcessingFinish ? "not-allowed" : "pointer",
+            }}
+          >
+            {isProcessingFinish ? "Processing..." : "Я выиграл"}
+          </button>
+        )}
       </div>
 
       {/* Pending move для подписи */}
@@ -989,6 +1311,39 @@ export default function GameScreen({ gamePubkey, onBack }: GameScreenProps) {
             }}
           >
             Sign & Approve Move
+          </button>
+        </div>
+      )}
+
+      {pendingFinish && !isMyTurn && (
+        <div
+          style={{
+            padding: "20px",
+            backgroundColor: "#ffeaea",
+            border: "2px solid #dc3545",
+            borderRadius: "4px",
+            marginBottom: "20px",
+          }}
+        >
+          <h3 style={{ color: "#000", marginBottom: "10px" }}>Finish Request to Sign</h3>
+          <p style={{ color: "#000", marginBottom: "10px" }}>
+            Opponent claims victory. Please verify and sign if correct.
+          </p>
+          <div style={{ marginBottom: "10px", color: "#000" }}>
+            <strong>Winner:</strong> {pendingFinish.winnerPubkey.substring(0, 8)}...
+          </div>
+          <button
+            onClick={handlePendingFinishSignature}
+            style={{
+              padding: "10px 20px",
+              backgroundColor: "#dc3545",
+              color: "white",
+              border: "none",
+              borderRadius: "4px",
+              cursor: "pointer",
+            }}
+          >
+            Sign & Approve Finish
           </button>
         </div>
       )}

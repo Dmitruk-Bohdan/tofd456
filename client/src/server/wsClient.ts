@@ -5,7 +5,19 @@ const logger = new Logger("WebSocketClient");
 const WS_URL = import.meta.env.VITE_WS_URL || "ws://localhost:3001";
 
 export interface WSMessage {
-  type: "subscribe" | "move" | "chat" | "error" | "move_request" | "move_signed" | "dice_rolled" | "turn_completed" | "turn_changed";
+  type:
+    | "subscribe"
+    | "move"
+    | "chat"
+    | "error"
+    | "move_request"
+    | "move_signed"
+    | "dice_rolled"
+    | "turn_completed"
+    | "turn_changed"
+    | "finish_request"
+    | "finish_signed"
+    | "game_finished";
   gamePubkey?: string;
   playerPubkey?: string;
   moveIndex?: number;
@@ -17,6 +29,7 @@ export interface WSMessage {
   error?: string;
   transactionData?: number[]; // Сериализованная транзакция (массив байтов)
   newTurn?: number; // 1 = player1, 2 = player2
+  winnerPubkey?: string;
 }
 
 type MessageHandler = (message: WSMessage) => void;
@@ -208,6 +221,63 @@ class WebSocketClient {
     logger.debug("Sending signed move message", { message });
     this.ws.send(JSON.stringify(message));
     logger.info("Signed move sent", { gamePubkey });
+  }
+
+  /**
+   * Отправляет запрос на завершение игры (finish_request).
+   */
+  sendFinishRequest(gamePubkey: string, message: WSMessage): void {
+    logger.info("sendFinishRequest called", { gamePubkey, messageType: message.type });
+
+    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
+      const error = new Error("WebSocket not connected");
+      logger.error("Cannot send finish request", error, { readyState: this.ws?.readyState });
+      return;
+    }
+
+    logger.debug("Sending finish request message", { message });
+    this.ws.send(JSON.stringify(message));
+    logger.info("Finish request sent", { gamePubkey });
+  }
+
+  /**
+   * Отправляет подписанный finish обратно запросившему игроку.
+   */
+  sendFinishSigned(gamePubkey: string, message: WSMessage): void {
+    logger.info("sendFinishSigned called", { gamePubkey, messageType: message.type });
+
+    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
+      const error = new Error("WebSocket not connected");
+      logger.error("Cannot send signed finish", error, { readyState: this.ws?.readyState });
+      return;
+    }
+
+    logger.debug("Sending signed finish message", { message });
+    this.ws.send(JSON.stringify(message));
+    logger.info("Signed finish sent", { gamePubkey });
+  }
+
+  /**
+   * Отправляет уведомление об окончании игры.
+   */
+  sendGameFinished(gamePubkey: string, winnerPubkey: string): void {
+    logger.info("sendGameFinished called", { gamePubkey, winnerPubkey });
+
+    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
+      const error = new Error("WebSocket not connected");
+      logger.error("Cannot send game finished", error, { readyState: this.ws?.readyState });
+      return;
+    }
+
+    const message: WSMessage = {
+      type: "game_finished",
+      gamePubkey,
+      winnerPubkey,
+    };
+
+    logger.debug("Sending game finished message", { message });
+    this.ws.send(JSON.stringify(message));
+    logger.info("Game finished message sent", { gamePubkey });
   }
 
   /**

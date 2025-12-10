@@ -499,6 +499,92 @@ wss.on("connection", (ws: WebSocket) => {
           newTurn: message.newTurn,
           clientsNotified: notifiedCount,
         });
+      } else if (message.type === "finish_request") {
+        // Запрос на завершение игры: пересылаем обоим игрокам (как move_request)
+        logger.info("Finish request received", {
+          gamePubkey: message.gamePubkey,
+          fromPlayer: message.playerPubkey,
+          winner: message.winnerPubkey,
+        });
+
+        let forwardedCount = 0;
+        wss.clients.forEach((client) => {
+          if (client.readyState === WebSocket.OPEN && clientSubscriptions.has(client)) {
+            const subscription = clientSubscriptions.get(client);
+            if (subscription?.gamePubkey === message.gamePubkey) {
+              client.send(JSON.stringify(message));
+              forwardedCount++;
+            }
+          }
+        });
+
+        logger.info("Finish request forwarded", {
+          gamePubkey: message.gamePubkey,
+          clientsNotified: forwardedCount,
+        });
+      } else if (message.type === "finish_signed") {
+        // Подписанный finish отправляется обратно инициатору
+        logger.info("Signed finish received", {
+          gamePubkey: message.gamePubkey,
+          fromPlayer: message.playerPubkey,
+        });
+
+        // Находим инициатора (того, кто НЕ подписал, т.е. другой игрок)
+        const gameStmt = db.prepare("SELECT player1, player2 FROM games WHERE game_pubkey = ?");
+        const game = gameStmt.get(message.gamePubkey) as { player1: string; player2: string } | undefined;
+
+        if (!game) {
+          logger.warn("Game not found for signed finish", { gamePubkey: message.gamePubkey });
+          ws.send(JSON.stringify({ type: "error", error: "Game not found" }));
+          return;
+        }
+
+        const targetPlayer = message.playerPubkey === game.player1 ? game.player2 : game.player1;
+
+        logger.info("Forwarding signed finish to requester", {
+          gamePubkey: message.gamePubkey,
+          fromPlayer: message.playerPubkey,
+          toPlayer: targetPlayer,
+        });
+
+        let forwardedCount = 0;
+        wss.clients.forEach((client) => {
+          if (client.readyState === WebSocket.OPEN && clientSubscriptions.has(client)) {
+            const subscription = clientSubscriptions.get(client);
+            if (subscription?.gamePubkey === message.gamePubkey) {
+              client.send(JSON.stringify(message));
+              forwardedCount++;
+            }
+          }
+        });
+
+        logger.info("Signed finish forwarded", {
+          gamePubkey: message.gamePubkey,
+          clientsNotified: forwardedCount,
+        });
+      } else if (message.type === "game_finished") {
+        // Уведомление, что транзакция finish_game подтверждена
+        logger.info("Game finished notification received", {
+          gamePubkey: message.gamePubkey,
+          winner: message.winnerPubkey,
+        });
+
+        let notifiedCount = 0;
+        wss.clients.forEach((client) => {
+          if (client.readyState === WebSocket.OPEN && clientSubscriptions.has(client)) {
+            const subscription = clientSubscriptions.get(client);
+            if (subscription?.gamePubkey === message.gamePubkey) {
+              client.send(JSON.stringify(message));
+              notifiedCount++;
+            }
+          }
+        });
+
+        logger.info("Game finished broadcasted", {
+          gamePubkey: message.gamePubkey,
+          winner: message.winnerPubkey,
+          clientsNotified: notifiedCount,
+        });
       } else {
         logger.warn("Unknown message type", { messageType: message.type });
       }
