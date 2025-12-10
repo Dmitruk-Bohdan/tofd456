@@ -13,6 +13,7 @@ import {
 } from "@solana/web3.js";
 import { PROGRAM_ID } from "../solana/anchorClient";
 import idlJson from "../idl/backgammon.json";
+import { createManualRefundTransaction } from "../solana/gameService";
 
 const logger = new Logger("GameScreen");
 
@@ -36,6 +37,7 @@ export default function GameScreen({ gamePubkey, onBack }: GameScreenProps) {
   const [isRolling, setIsRolling] = useState(false);
   const [isProcessingMove, setIsProcessingMove] = useState(false);
   const [isProcessingFinish, setIsProcessingFinish] = useState(false);
+  const [isProcessingManual, setIsProcessingManual] = useState(false);
   const [selectedCell, setSelectedCell] = useState<number | null>(null);
   const [pendingMove, setPendingMove] = useState<{
     boardPoints: number[];
@@ -45,6 +47,9 @@ export default function GameScreen({ gamePubkey, onBack }: GameScreenProps) {
   } | null>(null);
   const [pendingFinish, setPendingFinish] = useState<{
     winnerPubkey: string;
+    transactionData: number[];
+  } | null>(null);
+  const [pendingManual, setPendingManual] = useState<{
     transactionData: number[];
   } | null>(null);
   const [winnerBanner, setWinnerBanner] = useState<{
@@ -248,6 +253,42 @@ export default function GameScreen({ gamePubkey, onBack }: GameScreenProps) {
       setIsMyTurn(false);
       setTimeout(() => {
         setWinnerBanner(null);
+        onBack();
+      }, 5000);
+    },
+    [gamePubkey, onBack]
+  );
+
+  // Отправка manual_refund после двух подписей
+  const submitManualTransaction = useCallback(
+    async (signedTx: Transaction) => {
+      logger.info("Submitting manual refund transaction to blockchain", {
+        gamePubkey,
+        signaturesCount: signedTx.signatures.length,
+      });
+
+      const provider = getProvider();
+      if (!provider) throw new Error("Provider not initialized");
+      const connection = provider.connection ?? (await import("../solana/anchorClient")).getConnection();
+
+      const serializedTx = signedTx.serialize({
+        requireAllSignatures: true,
+        verifySignatures: false,
+      });
+
+      const signature = await connection.sendRawTransaction(serializedTx, {
+        skipPreflight: false,
+        maxRetries: 3,
+      });
+
+      logger.info("Manual refund transaction sent, waiting for confirmation", { signature });
+      await connection.confirmTransaction(signature, "confirmed");
+
+      logger.info("Manual refund transaction confirmed", { signature });
+
+      wsClient.sendManualFinished(gamePubkey);
+      setIsMyTurn(false);
+      setTimeout(() => {
         onBack();
       }, 5000);
     },
@@ -559,6 +600,43 @@ export default function GameScreen({ gamePubkey, onBack }: GameScreenProps) {
           setWinnerBanner(null);
           onBack();
         }, 5000);
+      } else if (message.type === "manual_request" && message.gamePubkey === gamePubkey) {
+        logger.info("Received manual refund request for signature", {
+          hasTransactionData: !!message.transactionData,
+        });
+
+        if (message.transactionData) {
+          setPendingManual({ transactionData: message.transactionData });
+          logger.info("Pending manual refund set", {
+            transactionDataLength: message.transactionData.length,
+          });
+        }
+      } else if (message.type === "manual_signed" && message.gamePubkey === gamePubkey) {
+        logger.info("Received signed manual refund, submitting to blockchain");
+
+        if (message.transactionData) {
+          const txBuffer = Buffer.from(message.transactionData);
+          const tx = Transaction.from(txBuffer);
+
+          logger.info("Manual refund transaction deserialized", {
+            signaturesCount: tx.signatures.length,
+            signatures: tx.signatures.map((sig, idx) => ({
+              index: idx,
+              publicKey: sig.publicKey.toBase58(),
+              signature: sig.signature ? Buffer.from(sig.signature).toString("base64").substring(0, 16) + "..." : "null",
+            })),
+          });
+
+          submitManualTransaction(tx).catch((error: unknown) => {
+            logger.error("Error submitting manual refund transaction", error instanceof Error ? error : new Error(String(error)));
+          });
+        }
+      } else if (message.type === "manual_finished" && message.gamePubkey === gamePubkey) {
+        logger.info("Manual refund finished notification received");
+        setIsMyTurn(false);
+        setTimeout(() => {
+          onBack();
+        }, 5000);
       }
     };
 
@@ -571,7 +649,7 @@ export default function GameScreen({ gamePubkey, onBack }: GameScreenProps) {
     // НЕ включаем pendingMove в зависимости, чтобы не пересоздавать handlers при его изменении
     // pendingMove используется внутри handler через замыкание
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [gamePubkey, myPubkey, submitMoveToBlockchain, submitSignedTransactionToBlockchain, submitFinishTransaction, refreshGameState, gameInfo]);
+  }, [gamePubkey, myPubkey, submitMoveToBlockchain, submitSignedTransactionToBlockchain, submitFinishTransaction, submitManualTransaction, refreshGameState, gameInfo]);
 
   // Бросок кубиков
   const rollDice = useCallback(async () => {
@@ -935,6 +1013,53 @@ export default function GameScreen({ gamePubkey, onBack }: GameScreenProps) {
     }
   }, [createFinishTransaction, gamePubkey, isMyTurn, isProcessingFinish, myPubkey]);
 
+  // Ручной рефанд (кнопка "Я ливаю")
+  const confirmManualRefund = useCallback(async () => {
+    if (isProcessingManual || pendingManual) return;
+
+    logger.info("Confirming manual refund", { gamePubkey, myPubkey });
+    setIsProcessingManual(true);
+
+    try {
+      const tx = await createManualRefundTransaction(gamePubkey);
+
+      const myKeypair = getCurrentKeypair();
+      if (!myKeypair) {
+        throw new Error("Keypair not found");
+      }
+      tx.partialSign(myKeypair);
+
+      logger.info("Manual refund transaction signed by me", {
+        myPubkey,
+        signaturesCount: tx.signatures.length,
+        signatures: tx.signatures.map((sig, idx) => ({
+          index: idx,
+          publicKey: sig.publicKey.toBase58(),
+          signature: sig.signature ? Buffer.from(sig.signature).toString("base64").substring(0, 16) + "..." : "null",
+        })),
+      });
+
+      const serializedTx = tx.serialize({ requireAllSignatures: false, verifySignatures: false });
+      logger.info("Manual refund transaction serialized", { serializedLength: serializedTx.length });
+
+      const manualRequest: WSMessage = {
+        type: "manual_request",
+        gamePubkey,
+        playerPubkey: myPubkey,
+        transactionData: Array.from(serializedTx),
+      };
+
+      wsClient.sendManualRequest(gamePubkey, manualRequest);
+
+      setPendingManual({ transactionData: Array.from(serializedTx) });
+      setIsProcessingManual(false);
+    } catch (error) {
+      logger.error("Error confirming manual refund", error as Error, { gamePubkey });
+      alert("Failed to request manual refund. Please try again.");
+      setIsProcessingManual(false);
+    }
+  }, [gamePubkey, isProcessingManual, myPubkey, pendingManual]);
+
 
   // Обработка pending move (когда пришёл запрос на подпись)
   const handlePendingMoveSignature = useCallback(async () => {
@@ -1040,6 +1165,63 @@ export default function GameScreen({ gamePubkey, onBack }: GameScreenProps) {
     }
   }, [pendingMove, gamePubkey, myPubkey]);
 
+  // Обработка pending manual_refund (подписание вторым игроком)
+  const handlePendingManualSignature = useCallback(async () => {
+    if (!pendingManual || !pendingManual.transactionData) return;
+
+    logger.info("Signing pending manual refund", {
+      gamePubkey,
+      pendingManual: `[${pendingManual.transactionData.length} bytes]`,
+      myPubkey,
+    });
+
+    try {
+      const myKeypair = getCurrentKeypair();
+      if (!myKeypair) {
+        throw new Error("Keypair not available");
+      }
+
+      const txBuffer = Buffer.from(pendingManual.transactionData);
+      const tx = Transaction.from(txBuffer);
+
+      if (!tx.recentBlockhash) {
+        const provider = getProvider();
+        if (!provider) throw new Error("Provider not initialized");
+        const connection = provider.connection ?? (await import("../solana/anchorClient")).getConnection();
+        const { blockhash } = await connection.getLatestBlockhash("finalized");
+        tx.recentBlockhash = blockhash;
+      }
+
+      tx.partialSign(myKeypair);
+
+      logger.info("Manual refund transaction signed by me", {
+        myPubkey: myKeypair.publicKey.toBase58(),
+        signaturesCount: tx.signatures.length,
+        signatures: tx.signatures.map((sig, idx) => ({
+          index: idx,
+          publicKey: sig.publicKey.toBase58(),
+          signature: sig.signature ? Buffer.from(sig.signature).toString("base64").substring(0, 16) + "..." : "null",
+        })),
+      });
+
+      const serializedTx = tx.serialize({ requireAllSignatures: true, verifySignatures: false });
+      logger.info("Signed manual refund serialized", { serializedLength: serializedTx.length });
+
+      const signedMessage: WSMessage = {
+        type: "manual_signed",
+        gamePubkey,
+        playerPubkey: myPubkey,
+        transactionData: Array.from(serializedTx),
+      };
+
+      wsClient.sendManualSigned(gamePubkey, signedMessage);
+      setPendingManual(null);
+    } catch (error) {
+      logger.error("Error signing pending manual refund", error as Error, { gamePubkey });
+      alert("Failed to sign manual refund. Please try again.");
+    }
+  }, [gamePubkey, myPubkey, pendingManual]);
+
   // Обработка pending finish (подписание победы вторым игроком)
   const handlePendingFinishSignature = useCallback(async () => {
     if (!pendingFinish || !pendingFinish.transactionData) return;
@@ -1107,6 +1289,13 @@ export default function GameScreen({ gamePubkey, onBack }: GameScreenProps) {
       handlePendingFinishSignature();
     }
   }, [handlePendingFinishSignature, isMyTurn, pendingFinish]);
+
+  // Автоподпись pending manual_refund, когда это не наш ход
+  useEffect(() => {
+    if (!isMyTurn && pendingManual) {
+      handlePendingManualSignature();
+    }
+  }, [handlePendingManualSignature, isMyTurn, pendingManual]);
 
   return (
     <div style={{ width: "100%", padding: "40px", backgroundColor: "white" }}>
@@ -1279,6 +1468,22 @@ export default function GameScreen({ gamePubkey, onBack }: GameScreenProps) {
             {isProcessingFinish ? "Processing..." : "Я выиграл"}
           </button>
         )}
+
+        <button
+          onClick={confirmManualRefund}
+          disabled={isProcessingManual}
+          style={{
+            padding: "12px 24px",
+            fontSize: "16px",
+            backgroundColor: isProcessingManual ? "#ccc" : "#6c757d",
+            color: "white",
+            border: "none",
+            borderRadius: "4px",
+            cursor: isProcessingManual ? "not-allowed" : "pointer",
+          }}
+        >
+          {isProcessingManual ? "Processing..." : "Я ливаю"}
+        </button>
       </div>
 
       {/* Pending move для подписи */}
@@ -1344,6 +1549,36 @@ export default function GameScreen({ gamePubkey, onBack }: GameScreenProps) {
             }}
           >
             Sign & Approve Finish
+          </button>
+        </div>
+      )}
+
+      {pendingManual && !isMyTurn && (
+        <div
+          style={{
+            padding: "20px",
+            backgroundColor: "#eef1ff",
+            border: "2px solid #6c757d",
+            borderRadius: "4px",
+            marginBottom: "20px",
+          }}
+        >
+          <h3 style={{ color: "#000", marginBottom: "10px" }}>Manual Refund Request to Sign</h3>
+          <p style={{ color: "#000", marginBottom: "10px" }}>
+            Opponent requests mutual refund. Sign to approve returning funds to both players.
+          </p>
+          <button
+            onClick={handlePendingManualSignature}
+            style={{
+              padding: "10px 20px",
+              backgroundColor: "#6c757d",
+              color: "white",
+              border: "none",
+              borderRadius: "4px",
+              cursor: "pointer",
+            }}
+          >
+            Sign & Approve Refund
           </button>
         </div>
       )}

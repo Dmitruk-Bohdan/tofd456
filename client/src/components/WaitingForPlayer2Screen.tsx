@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
-import { getGameState } from "../solana/gameService";
+import { getGameState, cancelGameBeforeJoin } from "../solana/gameService";
+import { getProvider } from "../solana/anchorClient";
 import { Logger } from "../utils/logger";
 
 const logger = new Logger("WaitingForPlayer2Screen");
@@ -20,6 +21,7 @@ export default function WaitingForPlayer2Screen({
   onCancel,
 }: WaitingForPlayer2ScreenProps) {
   const [checking, setChecking] = useState(false);
+  const [isCancelling, setIsCancelling] = useState(false);
 
   useEffect(() => {
     let isCancelled = false;
@@ -111,18 +113,41 @@ export default function WaitingForPlayer2Screen({
 
       <div style={{ display: "flex", gap: "10px", justifyContent: "center" }}>
         <button
-          onClick={onCancel}
+          onClick={async () => {
+            const provider = getProvider();
+            const myPubkey = provider?.wallet?.publicKey?.toBase58();
+            const isCreator = myPubkey === player1Pubkey;
+
+            if (!isCreator) {
+              alert("Только создатель игры может отменить её до присоединения второго игрока.");
+              return;
+            }
+
+            try {
+              setIsCancelling(true);
+              const sig = await cancelGameBeforeJoin(gamePubkey);
+              logger.info("Game cancelled before join", { gamePubkey, signature: sig });
+              alert("Игра отменена, средства возвращены. Возврат в меню.");
+              onCancel();
+            } catch (e) {
+              logger.error("Failed to cancel game", e as Error, { gamePubkey });
+              alert("Не удалось отменить игру. Попробуйте ещё раз.");
+            } finally {
+              setIsCancelling(false);
+            }
+          }}
+          disabled={isCancelling}
           style={{
             padding: "10px 20px",
             fontSize: "16px",
-            backgroundColor: "#6c757d",
+            backgroundColor: isCancelling ? "#ccc" : "#dc3545",
             color: "white",
             border: "none",
             borderRadius: "4px",
-            cursor: "pointer",
+            cursor: isCancelling ? "not-allowed" : "pointer",
           }}
         >
-          Cancel
+          {isCancelling ? "Отмена..." : "Cancel"}
         </button>
       </div>
     </div>

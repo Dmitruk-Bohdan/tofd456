@@ -17,7 +17,10 @@ export interface WSMessage {
     | "turn_changed"
     | "finish_request"
     | "finish_signed"
-    | "game_finished";
+    | "game_finished"
+    | "manual_request"
+    | "manual_signed"
+    | "manual_finished";
   gamePubkey?: string;
   playerPubkey?: string;
   moveIndex?: number;
@@ -278,6 +281,62 @@ class WebSocketClient {
     logger.debug("Sending game finished message", { message });
     this.ws.send(JSON.stringify(message));
     logger.info("Game finished message sent", { gamePubkey });
+  }
+
+  /**
+   * Отправляет запрос на ручной рефанд (manual_refund).
+   */
+  sendManualRequest(gamePubkey: string, message: WSMessage): void {
+    logger.info("sendManualRequest called", { gamePubkey, messageType: message.type });
+
+    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
+      const error = new Error("WebSocket not connected");
+      logger.error("Cannot send manual request", error, { readyState: this.ws?.readyState });
+      return;
+    }
+
+    logger.debug("Sending manual request message", { message });
+    this.ws.send(JSON.stringify(message));
+    logger.info("Manual request sent", { gamePubkey });
+  }
+
+  /**
+   * Отправляет подписанный manual_refund обратно инициатору.
+   */
+  sendManualSigned(gamePubkey: string, message: WSMessage): void {
+    logger.info("sendManualSigned called", { gamePubkey, messageType: message.type });
+
+    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
+      const error = new Error("WebSocket not connected");
+      logger.error("Cannot send signed manual", error, { readyState: this.ws?.readyState });
+      return;
+    }
+
+    logger.debug("Sending signed manual message", { message });
+    this.ws.send(JSON.stringify(message));
+    logger.info("Signed manual sent", { gamePubkey });
+  }
+
+  /**
+   * Отправляет уведомление о завершении manual_refund.
+   */
+  sendManualFinished(gamePubkey: string): void {
+    logger.info("sendManualFinished called", { gamePubkey });
+
+    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
+      const error = new Error("WebSocket not connected");
+      logger.error("Cannot send manual finished", error, { readyState: this.ws?.readyState });
+      return;
+    }
+
+    const message: WSMessage = {
+      type: "manual_finished",
+      gamePubkey,
+    };
+
+    logger.debug("Sending manual finished message", { message });
+    this.ws.send(JSON.stringify(message));
+    logger.info("Manual finished message sent", { gamePubkey });
   }
 
   /**

@@ -177,6 +177,138 @@ export async function initGame(
 }
 
 /**
+ * Отмена игры до присоединения второго игрока (cancel_before_join).
+ * Возвращает средства первому игроку.
+ */
+export async function cancelGameBeforeJoin(gamePubkey: string): Promise<string> {
+  logger.info("cancelGameBeforeJoin called", { gamePubkey });
+
+  const provider = getProvider();
+  if (!provider) {
+    const error = new Error("Anchor provider not initialized. Call initAnchorClient() first.");
+    logger.error("Provider not initialized", error);
+    throw error;
+  }
+
+  const connection = provider.connection ?? getConnection();
+
+  // Ключ игрока 1 (создателя)
+  const myKeypair =
+    (provider.wallet as unknown as { payer?: Keypair }).payer ?? getCurrentKeypair();
+  if (!myKeypair) {
+    const error = new Error("Keypair not available");
+    logger.error("Keypair check failed", error);
+    throw error;
+  }
+
+  const gamePubkeyObj = new PublicKey(gamePubkey);
+
+  // Ищем дискриминатор инструкции cancel_before_join
+  const cancelIdl = (idlJson.instructions as { name: string; discriminator: number[] }[]).find(
+    (ix) => ix.name === "cancel_before_join"
+  );
+  if (!cancelIdl) {
+    const error = new Error("cancel_before_join instruction not found in IDL");
+    logger.error("IDL lookup failed", error);
+    throw error;
+  }
+
+  const data = Buffer.from(cancelIdl.discriminator);
+
+  const ix = new TransactionInstruction({
+    programId: PROGRAM_ID,
+    keys: [
+      { pubkey: gamePubkeyObj, isSigner: false, isWritable: true },
+      { pubkey: myKeypair.publicKey, isSigner: true, isWritable: true },
+      { pubkey: SystemProgram.programId, isSigner: false, isWritable: false },
+    ],
+    data,
+  });
+
+  const tx = new Transaction().add(ix);
+  const { blockhash } = await connection.getLatestBlockhash("finalized");
+  tx.recentBlockhash = blockhash;
+  tx.feePayer = myKeypair.publicKey;
+
+  logger.info("Sending cancel_before_join to Solana...");
+  const signature = await connection.sendTransaction(tx, [myKeypair]);
+  await connection.confirmTransaction(signature, "confirmed");
+
+  logger.info("cancel_before_join successful", {
+    signature,
+    gamePubkey,
+    player1: myKeypair.publicKey.toBase58(),
+  });
+
+  return signature;
+}
+
+/**
+ * Ручной взаимный возврат средств (manual_refund). Требует двух подписей.
+ */
+export async function createManualRefundTransaction(gamePubkey: string): Promise<Transaction> {
+  logger.info("createManualRefundTransaction called", { gamePubkey });
+
+  const provider = getProvider();
+  if (!provider) {
+    throw new Error("Anchor provider not initialized. Call initAnchorClient() first.");
+  }
+  const connection = provider.connection ?? getConnection();
+
+  const myKeypair =
+    (provider.wallet as unknown as { payer?: Keypair }).payer ?? getCurrentKeypair();
+  if (!myKeypair) {
+    throw new Error("Keypair not available");
+  }
+
+  // Получаем состояние игры, чтобы узнать обоих игроков
+  const gameState = await getGameState(gamePubkey);
+  if (!gameState) {
+    throw new Error("Game state not found");
+  }
+
+  const player1Pubkey = new PublicKey(gameState.player1);
+  const player2Pubkey = new PublicKey(gameState.player2);
+  const gamePubkeyObj = new PublicKey(gamePubkey);
+
+  const manualIdl = (idlJson.instructions as { name: string; discriminator: number[] }[]).find(
+    (ix) => ix.name === "manual_refund"
+  );
+  if (!manualIdl) {
+    throw new Error("manual_refund instruction not found in IDL");
+  }
+
+  const data = Buffer.from(manualIdl.discriminator);
+
+  const ix = new TransactionInstruction({
+    programId: PROGRAM_ID,
+    keys: [
+      { pubkey: gamePubkeyObj, isSigner: false, isWritable: true },
+      { pubkey: player1Pubkey, isSigner: true, isWritable: true },
+      { pubkey: player2Pubkey, isSigner: true, isWritable: true },
+      { pubkey: SystemProgram.programId, isSigner: false, isWritable: false },
+    ],
+    data,
+  });
+
+  const tx = new Transaction().add(ix);
+  const { blockhash } = await connection.getLatestBlockhash("finalized");
+  tx.recentBlockhash = blockhash;
+  // Важно: fee payer ставим player1, чтобы порядок подписей соответствовал accounts (player1, player2).
+  tx.feePayer = player1Pubkey;
+
+  logger.info("Manual refund transaction created", {
+    gamePubkey,
+    player1: player1Pubkey.toBase58(),
+    player2: player2Pubkey.toBase58(),
+    blockhash: blockhash.substring(0, 8) + "...",
+    feePayer: myKeypair.publicKey.toBase58(),
+  });
+
+  return tx;
+}
+
+/**
  * Получает состояние игры из блокчейна.
  * @param gamePubkey - Публичный ключ аккаунта игры
  * @returns состояние игры или null если аккаунт не найден
